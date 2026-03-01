@@ -13,6 +13,10 @@
 [![Tests](https://img.shields.io/badge/Tests-2%2C639_passing-brightgreen)](#development)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue)](https://github.com/ChrisRoyse/OCR-Provenance/pkgs/container/ocr-provenance)
 
+> *"This repo is life changing."* -- **Kunal Dalal**, Agentic Leadership Strategist
+>
+> ![Testimonial from Kunal Dalal](docs/images/testimonial-kunal-dalal.png)
+
 ---
 
 ## Install
