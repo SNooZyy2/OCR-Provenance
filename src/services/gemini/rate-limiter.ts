@@ -1,24 +1,41 @@
 /**
  * Rate Limiter for Gemini API
- * Implements RPM (requests per minute) and TPM (tokens per minute) limits
+ * Implements RPM (requests per minute), TPM (tokens per minute),
+ * and RPD (requests per day) limits.
  */
 
-import { GEMINI_RATE_LIMIT } from './config.js';
+import { getGeminiRateLimit } from './config.js';
 
 export interface RateLimiterStatus {
   requestsRemaining: number;
   tokensRemaining: number;
   resetInMs: number;
+  dailyRequestsRemaining: number;
+  dailyResetInMs: number;
 }
 
 export class GeminiRateLimiter {
+  // Per-minute counters
   private requestCount: number = 0;
   private tokenCount: number = 0;
   private windowStart: number = Date.now();
   private readonly windowMs: number = 60000; // 1 minute window
 
-  private readonly maxRPM: number = GEMINI_RATE_LIMIT.RPM;
-  private readonly maxTPM: number = GEMINI_RATE_LIMIT.TPM;
+  private readonly maxRPM: number;
+  private readonly maxTPM: number;
+
+  // Per-day counters
+  private dailyRequestCount: number = 0;
+  private dayStart: number = Date.now();
+  private readonly maxRPD: number;
+  private readonly DAY_MS: number = 86_400_000; // 24 hours
+
+  constructor() {
+    const limits = getGeminiRateLimit();
+    this.maxRPM = limits.RPM;
+    this.maxTPM = limits.TPM;
+    this.maxRPD = limits.RPD;
+  }
 
   /**
    * Mutex queue to serialize acquire() calls.
@@ -28,7 +45,7 @@ export class GeminiRateLimiter {
   private _acquireQueue: Promise<void> = Promise.resolve();
 
   /**
-   * Check if we need to reset the window
+   * Check if we need to reset the minute window and/or the daily window
    */
   private checkWindow(): void {
     const now = Date.now();
@@ -36,6 +53,10 @@ export class GeminiRateLimiter {
       this.requestCount = 0;
       this.tokenCount = 0;
       this.windowStart = now;
+    }
+    if (now - this.dayStart >= this.DAY_MS) {
+      this.dailyRequestCount = 0;
+      this.dayStart = now;
     }
   }
 
@@ -68,7 +89,15 @@ export class GeminiRateLimiter {
   private async _doAcquire(estimatedTokens: number): Promise<void> {
     this.checkWindow();
 
-    // Check if we would exceed limits
+    // RPD check — hard error, no retry
+    if (this.dailyRequestCount >= this.maxRPD) {
+      throw new Error(
+        `Gemini daily request limit reached (${this.dailyRequestCount}/${this.maxRPD} RPD). ` +
+          'Wait until tomorrow or upgrade your GEMINI_TIER.'
+      );
+    }
+
+    // RPM / TPM check — wait for window reset
     if (this.requestCount >= this.maxRPM || this.tokenCount + estimatedTokens > this.maxTPM) {
       const waitTime = this.windowMs - (Date.now() - this.windowStart);
       if (waitTime > 0) {
@@ -84,6 +113,7 @@ export class GeminiRateLimiter {
     // Reserve the request and tokens
     this.requestCount++;
     this.tokenCount += estimatedTokens;
+    this.dailyRequestCount++;
   }
 
   /**
@@ -104,11 +134,14 @@ export class GeminiRateLimiter {
       requestsRemaining: Math.max(0, this.maxRPM - this.requestCount),
       tokensRemaining: Math.max(0, this.maxTPM - this.tokenCount),
       resetInMs: Math.max(0, this.windowMs - (Date.now() - this.windowStart)),
+      dailyRequestsRemaining: Math.max(0, this.maxRPD - this.dailyRequestCount),
+      dailyResetInMs: Math.max(0, this.DAY_MS - (Date.now() - this.dayStart)),
     };
   }
 
   /**
-   * Check if currently rate limited
+   * Check if RPM (requests per minute) limit is reached.
+   * Does not check TPM or RPD — use getStatus() for full picture.
    */
   isLimited(): boolean {
     this.checkWindow();
@@ -122,6 +155,8 @@ export class GeminiRateLimiter {
     this.requestCount = 0;
     this.tokenCount = 0;
     this.windowStart = Date.now();
+    this.dailyRequestCount = 0;
+    this.dayStart = Date.now();
   }
 
   private sleep(ms: number): Promise<void> {

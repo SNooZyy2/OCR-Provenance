@@ -13,11 +13,57 @@ export const GEMINI_MODELS = {
 
 export type GeminiModelId = (typeof GEMINI_MODELS)[keyof typeof GEMINI_MODELS];
 
-// Fixed rate limits for Gemini Flash API
-export const GEMINI_RATE_LIMIT = {
-  RPM: 1_000,
-  TPM: 4_000_000,
+// Gemini API tier definitions
+export type GeminiTier = 'free' | 'tier1' | 'tier2' | 'tier3';
+
+const VALID_GEMINI_TIERS: readonly GeminiTier[] = ['free', 'tier1', 'tier2', 'tier3'] as const;
+
+// Per-tier rate limits at 90% of upstream Gemini limits
+export const GEMINI_TIER_LIMITS = {
+  free:  { RPM: 9,     TPM: 225_000,   RPD: 225,    vlmConcurrency: 1  },
+  tier1: { RPM: 270,   TPM: 1_800_000, RPD: 1_350,  vlmConcurrency: 5  },
+  tier2: { RPM: 1_800, TPM: 3_600_000, RPD: 9_000,  vlmConcurrency: 10 },
+  tier3: { RPM: 1_800, TPM: 3_600_000, RPD: 45_000, vlmConcurrency: 10 },
 } as const;
+
+export type GeminiRateLimits = { RPM: number; TPM: number; RPD: number; vlmConcurrency: number };
+
+/**
+ * Read and validate the GEMINI_TIER env var.
+ * Defaults to 'tier1' if not set. Throws on invalid value.
+ */
+export function getGeminiTier(): GeminiTier {
+  const raw = process.env.GEMINI_TIER;
+  if (raw === undefined || raw === '') return 'tier1';
+  const normalized = raw.toLowerCase().trim();
+  if (!VALID_GEMINI_TIERS.includes(normalized as GeminiTier)) {
+    throw new Error(
+      `Invalid GEMINI_TIER="${raw}". Valid tiers: ${VALID_GEMINI_TIERS.join(', ')}. ` +
+        'Set GEMINI_TIER in .env or environment. Default is tier1.'
+    );
+  }
+  return normalized as GeminiTier;
+}
+
+/**
+ * Get rate limits for the current Gemini tier.
+ * Returns RPM, TPM, RPD, and vlmConcurrency (all at 90% of upstream).
+ */
+export function getGeminiRateLimit(): GeminiRateLimits {
+  return { ...GEMINI_TIER_LIMITS[getGeminiTier()] };
+}
+
+/**
+ * Get VLM concurrency limit.
+ * VLM_CONCURRENCY env var overrides the tier default.
+ */
+export function getVlmConcurrency(): number {
+  const tierDefault = GEMINI_TIER_LIMITS[getGeminiTier()].vlmConcurrency;
+  return parseIntEnv('VLM_CONCURRENCY', tierDefault);
+}
+
+// Default max concurrent Datalab OCR requests (conservative default; upstream hard limit is 200)
+export const DATALAB_MAX_CONCURRENT_DEFAULT = 10;
 
 // Thinking levels for Gemini 3 (4 levels: minimal, low, medium, high)
 export type ThinkingLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL';

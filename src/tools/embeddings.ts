@@ -23,13 +23,12 @@ import { successResult } from '../server/types.js';
 import { requireDatabase } from '../server/state.js';
 import { validateInput } from '../utils/validation.js';
 import { getImage } from '../services/storage/database/image-operations.js';
-import { getEmbeddingService, EmbeddingService } from '../services/embedding/embedder.js';
+import { getEmbeddingService } from '../services/embedding/embedder.js';
 import { getEmbeddingClient } from '../services/embedding/nomic.js';
 import { computeHash } from '../utils/hash.js';
 import { ProvenanceType as ProvType } from '../models/provenance.js';
 import type {
   ProvenanceRecord,
-  ProvenanceType,
   SourceType,
   ProvenanceLocation,
 } from '../models/provenance.js';
@@ -344,7 +343,6 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
     const embeddingService = getEmbeddingService();
     const rebuiltIds: string[] = [];
     const provenanceIds: string[] = [];
-    let vlmEmbedFailures = 0;
 
     if (input.chunk_id) {
       // Rebuild embedding for a single chunk
@@ -402,16 +400,20 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
         throw new Error(`Document not found for image: ${img.document_id}`);
       }
 
-      // Delete old VLM embedding and its provenance
+      // Delete old VLM embedding and its provenance (FK-safe order)
       if (img.vlm_embedding_id) {
-        // Capture provenance ID before deleting the embedding
-        const oldVlmEmb = conn.prepare('SELECT provenance_id FROM embeddings WHERE id = ?').get(img.vlm_embedding_id) as { provenance_id: string | null } | undefined;
+        // 1. Capture provenance ID before deleting the embedding
+        const oldVlmEmb = conn
+          .prepare('SELECT provenance_id FROM embeddings WHERE id = ?')
+          .get(img.vlm_embedding_id) as { provenance_id: string | null } | undefined;
         const oldVlmProvId = oldVlmEmb?.provenance_id ?? null;
-        vector.deleteVector(img.vlm_embedding_id);
-        db.deleteEmbeddingsByImageId(input.image_id);
-        // Clear vlm_embedding_id on image
+        // 2. Break FK: NULL out images.vlm_embedding_id FIRST
         conn.prepare('UPDATE images SET vlm_embedding_id = NULL WHERE id = ?').run(input.image_id);
-        // Delete orphaned provenance record AFTER removing the FK reference
+        // 3. Delete vector data
+        vector.deleteVector(img.vlm_embedding_id);
+        // 4. Delete embedding record (FK reference already cleared)
+        db.deleteEmbeddingsByImageId(input.image_id);
+        // 5. Delete orphaned provenance record
         if (oldVlmProvId) {
           conn.prepare('DELETE FROM provenance WHERE id = ?').run(oldVlmProvId);
         }
@@ -425,7 +427,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
       // Create provenance
       const provRecord: ProvenanceRecord = {
         id: provenanceId,
-        type: 'EMBEDDING' as ProvenanceType,
+        type: ProvType.EMBEDDING,
         created_at: now,
         processed_at: now,
         source_file_created_at: null,
@@ -491,7 +493,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
         model_version: EMBEDDING_MODEL.version,
         task_type: 'search_document',
         inference_mode: 'local',
-        gpu_device: 'cuda:0',
+        gpu_device: embClient.getLastDevice(),
         provenance_id: provenanceId,
         content_hash: computeHash(img.vlm_description),
         generation_duration_ms: null,
@@ -564,7 +566,6 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
 
       // Rebuild VLM embeddings for images when include_vlm is true
       if (input.include_vlm) {
-        const vlmEmbeddingService = new EmbeddingService();
         const vlmImages = conn
           .prepare(
             `SELECT id, vlm_description, vlm_embedding_id, provenance_id, page_number,
@@ -583,25 +584,46 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
           format: string | null;
         }>;
 
-        for (const img of vlmImages) {
-          try {
-            // Delete old VLM embedding and its provenance if exists
+        if (vlmImages.length > 0) {
+          // Phase 1: Pre-generate ALL vectors (fail fast, no DB changes)
+          const embClient = getEmbeddingClient();
+          const generatedVectors: Array<{
+            img: typeof vlmImages[number];
+            vectorData: Float32Array;
+          }> = [];
+
+          for (const img of vlmImages) {
+            const [vecData] = await embClient.embedChunks([img.vlm_description], 1);
+            if (!vecData) {
+              throw new Error(
+                `Vector generation failed for image ${img.id} ` +
+                `(description preview: "${img.vlm_description.slice(0, 80)}...")`
+              );
+            }
+            generatedVectors.push({ img, vectorData: vecData });
+          }
+
+          // Phase 2: Atomic DB swap (all vectors generated successfully)
+          const gpuDevice = embClient.getLastDevice();
+
+          for (const { img, vectorData } of generatedVectors) {
+            // Delete old VLM embedding (FK-safe order)
             if (img.vlm_embedding_id) {
-              // Capture provenance ID before deleting the embedding
-              const oldVlmEmb = conn.prepare('SELECT provenance_id FROM embeddings WHERE id = ?').get(img.vlm_embedding_id) as { provenance_id: string | null } | undefined;
+              const oldVlmEmb = conn
+                .prepare('SELECT provenance_id FROM embeddings WHERE id = ?')
+                .get(img.vlm_embedding_id) as { provenance_id: string | null } | undefined;
               const oldVlmProvId = oldVlmEmb?.provenance_id ?? null;
-              vector.deleteVector(img.vlm_embedding_id);
-              conn.prepare('DELETE FROM embeddings WHERE id = ?').run(img.vlm_embedding_id);
-              // Null out the reference on the image
+              // 1. Break FK: NULL out vlm_embedding_id FIRST
               conn.prepare('UPDATE images SET vlm_embedding_id = NULL WHERE id = ?').run(img.id);
-              // Delete orphaned provenance record AFTER removing the FK reference
+              // 2. Delete vector data
+              vector.deleteVector(img.vlm_embedding_id);
+              // 3. Delete embedding record
+              conn.prepare('DELETE FROM embeddings WHERE id = ?').run(img.vlm_embedding_id);
+              // 4. Delete orphaned provenance
               if (oldVlmProvId) {
                 conn.prepare('DELETE FROM provenance WHERE id = ?').run(oldVlmProvId);
               }
             }
-
-            // Generate new embedding for VLM description
-            const vlmEmbedResult = await vlmEmbeddingService.embedSearchQuery(img.vlm_description);
 
             // Create EMBEDDING provenance (depth 4, parent = VLM_DESCRIPTION provenance)
             const embProvId = uuidv4();
@@ -634,7 +656,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
               processed_at: now,
               source_file_created_at: null,
               source_file_modified_at: null,
-              source_type: 'EMBEDDING',
+              source_type: 'EMBEDDING' as SourceType,
               source_path: null,
               source_id: vlmProvId,
               root_document_id: doc.provenance_id,
@@ -642,8 +664,8 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
               content_hash: computeHash(img.vlm_description),
               input_hash: computeHash(img.vlm_description),
               file_hash: doc.file_hash,
-              processor: 'nomic-embed-text-v1.5',
-              processor_version: '1.5.0',
+              processor: EMBEDDING_MODEL.name,
+              processor_version: EMBEDDING_MODEL.version,
               processing_params: {
                 task_type: 'search_document',
                 inference_mode: 'local',
@@ -663,7 +685,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
               ]),
             });
 
-            // Insert embedding record (matches VLM pipeline pattern)
+            // Insert embedding record
             const embId = uuidv4();
             db.insertEmbedding({
               id: embId,
@@ -682,35 +704,25 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
               character_end: img.vlm_description.length,
               chunk_index: 0,
               total_chunks: 1,
-              model_name: 'nomic-embed-text-v1.5',
-              model_version: '1.5.0',
+              model_name: EMBEDDING_MODEL.name,
+              model_version: EMBEDDING_MODEL.version,
               task_type: 'search_document',
               inference_mode: 'local',
-              gpu_device: 'cuda:0',
+              gpu_device: gpuDevice,
               provenance_id: embProvId,
               content_hash: computeHash(img.vlm_description),
               generation_duration_ms: null,
             });
 
             // Store vector
-            vector.storeVector(embId, vlmEmbedResult);
+            vector.storeVector(embId, vectorData);
 
             // Update image with new VLM embedding ID
             conn.prepare('UPDATE images SET vlm_embedding_id = ? WHERE id = ?').run(embId, img.id);
 
             rebuiltIds.push(embId);
             provenanceIds.push(embProvId);
-          } catch (vlmError) {
-            const errMsg = vlmError instanceof Error ? vlmError.message : String(vlmError);
-            vlmEmbedFailures++;
-            console.error(`[EMBEDDING_REBUILD] VLM embedding failed for image ${img.id}: ${errMsg}`);
-            // Non-fatal: continue with remaining images
           }
-        }
-
-        // If ALL VLM embeddings failed, throw an error
-        if (vlmEmbedFailures > 0 && vlmEmbedFailures === vlmImages.length) {
-          throw new Error(`All ${vlmEmbedFailures} VLM embedding(s) failed during rebuild for document ${input.document_id}`);
         }
       }
     }
@@ -729,7 +741,6 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
         rebuilt_count: rebuiltIds.length,
         new_embedding_ids: rebuiltIds,
         provenance_ids: provenanceIds,
-        vlm_embed_failures: vlmEmbedFailures > 0 ? vlmEmbedFailures : undefined,
         target,
         next_steps: [
           { tool: 'ocr_embedding_stats', description: 'Verify embedding coverage after rebuild' },

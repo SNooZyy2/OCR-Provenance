@@ -243,10 +243,58 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     gaps.embeddings_without_vectors = {
       count: embeddingsWithoutVectors.length,
       sample_ids: embeddingsWithoutVectors.slice(0, SAMPLE_LIMIT).map((r) => r.id),
-      fixable: false,
-      fix_tool: 'ocr_embedding_rebuild',
-      fix_hint: 'Use include_vlm=true for VLM embeddings',
+      fixable: true,
+      fix_tool: 'ocr_health_check',
+      fix_hint: 'Set fix=true to delete broken embedding records and clean up associated data',
     };
+
+    // Fix: Delete broken embedding records that have no vector data
+    if (input.fix && embeddingsWithoutVectors.length > 0) {
+      try {
+        let deletedEmbeddings = 0;
+        let cleanedProvenance = 0;
+        let clearedImageRefs = 0;
+
+        for (const row of embeddingsWithoutVectors) {
+          // 1. NULL out any images.vlm_embedding_id that reference this embedding
+          const imgResult = conn
+            .prepare('UPDATE images SET vlm_embedding_id = NULL WHERE vlm_embedding_id = ?')
+            .run(row.id);
+          clearedImageRefs += imgResult.changes;
+
+          // 2. Capture the embedding's provenance_id
+          const emb = conn
+            .prepare('SELECT provenance_id FROM embeddings WHERE id = ?')
+            .get(row.id) as { provenance_id: string | null } | undefined;
+          const provId = emb?.provenance_id ?? null;
+
+          // 3. Delete the embedding record
+          const delResult = conn.prepare('DELETE FROM embeddings WHERE id = ?').run(row.id);
+          deletedEmbeddings += delResult.changes;
+
+          // 4. Delete the orphaned provenance record
+          if (provId) {
+            conn.prepare('UPDATE provenance SET parent_id = NULL WHERE parent_id = ?').run(provId);
+            conn.prepare('UPDATE provenance SET source_id = NULL WHERE source_id = ?').run(provId);
+            const provResult = conn.prepare('DELETE FROM provenance WHERE id = ?').run(provId);
+            cleanedProvenance += provResult.changes;
+          }
+        }
+
+        fixes.push(
+          `Deleted ${deletedEmbeddings} broken embedding records (no vector data), ` +
+          `cleaned ${cleanedProvenance} orphaned provenance records, ` +
+          `cleared ${clearedImageRefs} stale image references`
+        );
+      } catch (embFixError) {
+        const errMsg = embFixError instanceof Error ? embFixError.message : String(embFixError);
+        console.error(`[HealthCheck] Broken embedding cleanup failed: ${errMsg}`);
+        fixFailures.push({
+          fix: 'Broken embedding cleanup (embeddings_without_vectors)',
+          error: errMsg,
+        });
+      }
+    }
 
     // ──────────────────────────────────────────────────────────────
     // Gap 5: Orphaned provenance records

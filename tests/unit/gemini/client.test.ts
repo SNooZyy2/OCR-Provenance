@@ -9,7 +9,11 @@ import {
   CircuitBreaker,
   loadGeminiConfig,
   GEMINI_MODELS,
-  GEMINI_RATE_LIMIT,
+  GEMINI_TIER_LIMITS,
+  getGeminiTier,
+  getGeminiRateLimit,
+  getVlmConcurrency,
+  DATALAB_MAX_CONCURRENT_DEFAULT,
   estimateTokens,
 } from '../../../src/services/gemini/index.js';
 
@@ -26,9 +30,80 @@ describe('Gemini Config', () => {
     expect(Object.keys(GEMINI_MODELS)).toEqual(['FLASH_3']);
   });
 
-  it('should have correct rate limits', () => {
-    expect(GEMINI_RATE_LIMIT.RPM).toBe(1000);
-    expect(GEMINI_RATE_LIMIT.TPM).toBe(4_000_000);
+  it('should have correct tier-based rate limits', () => {
+    // Default tier is tier1
+    const originalTier = process.env.GEMINI_TIER;
+    delete process.env.GEMINI_TIER;
+
+    expect(getGeminiTier()).toBe('tier1');
+    const limits = getGeminiRateLimit();
+    expect(limits.RPM).toBe(270);
+    expect(limits.TPM).toBe(1_800_000);
+    expect(limits.RPD).toBe(1_350);
+    expect(limits.vlmConcurrency).toBe(5);
+
+    if (originalTier) process.env.GEMINI_TIER = originalTier;
+  });
+
+  it('should have correct limits for all tiers', () => {
+    expect(GEMINI_TIER_LIMITS.free).toEqual({ RPM: 9, TPM: 225_000, RPD: 225, vlmConcurrency: 1 });
+    expect(GEMINI_TIER_LIMITS.tier1).toEqual({ RPM: 270, TPM: 1_800_000, RPD: 1_350, vlmConcurrency: 5 });
+    expect(GEMINI_TIER_LIMITS.tier2).toEqual({ RPM: 1_800, TPM: 3_600_000, RPD: 9_000, vlmConcurrency: 10 });
+    expect(GEMINI_TIER_LIMITS.tier3).toEqual({ RPM: 1_800, TPM: 3_600_000, RPD: 45_000, vlmConcurrency: 10 });
+  });
+
+  it('should throw on invalid GEMINI_TIER', () => {
+    const originalTier = process.env.GEMINI_TIER;
+    process.env.GEMINI_TIER = 'invalid';
+
+    expect(() => getGeminiTier()).toThrow('Invalid GEMINI_TIER="invalid"');
+
+    if (originalTier) {
+      process.env.GEMINI_TIER = originalTier;
+    } else {
+      delete process.env.GEMINI_TIER;
+    }
+  });
+
+  it('should read GEMINI_TIER env var', () => {
+    const originalTier = process.env.GEMINI_TIER;
+    process.env.GEMINI_TIER = 'free';
+
+    expect(getGeminiTier()).toBe('free');
+    const limits = getGeminiRateLimit();
+    expect(limits.RPM).toBe(9);
+
+    if (originalTier) {
+      process.env.GEMINI_TIER = originalTier;
+    } else {
+      delete process.env.GEMINI_TIER;
+    }
+  });
+
+  it('should have VLM concurrency and Datalab defaults', () => {
+    const originalTier = process.env.GEMINI_TIER;
+    const originalVlm = process.env.VLM_CONCURRENCY;
+    delete process.env.GEMINI_TIER;
+    delete process.env.VLM_CONCURRENCY;
+
+    expect(getVlmConcurrency()).toBe(5); // tier1 default
+    expect(DATALAB_MAX_CONCURRENT_DEFAULT).toBe(10);
+
+    if (originalTier) process.env.GEMINI_TIER = originalTier;
+    if (originalVlm) process.env.VLM_CONCURRENCY = originalVlm;
+  });
+
+  it('should allow VLM_CONCURRENCY env override', () => {
+    const originalVlm = process.env.VLM_CONCURRENCY;
+    process.env.VLM_CONCURRENCY = '20';
+
+    expect(getVlmConcurrency()).toBe(20);
+
+    if (originalVlm) {
+      process.env.VLM_CONCURRENCY = originalVlm;
+    } else {
+      delete process.env.VLM_CONCURRENCY;
+    }
   });
 
   it('should load config from environment', () => {
@@ -58,18 +133,19 @@ describe('GeminiRateLimiter', () => {
     limiter = new GeminiRateLimiter();
   });
 
-  it('should start with full capacity', () => {
+  it('should start with full capacity (tier1 defaults)', () => {
     const status = limiter.getStatus();
-    expect(status.requestsRemaining).toBe(1000);
-    expect(status.tokensRemaining).toBe(4_000_000);
+    // tier1: 270 RPM, 1.8M TPM
+    expect(status.requestsRemaining).toBe(270);
+    expect(status.tokensRemaining).toBe(1_800_000);
   });
 
   it('should allow acquiring tokens', async () => {
     await limiter.acquire(1000);
 
     const status = limiter.getStatus();
-    expect(status.requestsRemaining).toBe(999);
-    expect(status.tokensRemaining).toBe(3_999_000);
+    expect(status.requestsRemaining).toBe(269);
+    expect(status.tokensRemaining).toBe(1_799_000);
   });
 
   it('should track token usage accurately', async () => {
@@ -77,7 +153,7 @@ describe('GeminiRateLimiter', () => {
     limiter.recordUsage(1000, 1500); // Actual was 500 more
 
     const status = limiter.getStatus();
-    expect(status.tokensRemaining).toBe(3_998_500);
+    expect(status.tokensRemaining).toBe(1_798_500);
   });
 
   it('should not be limited initially', () => {
@@ -89,7 +165,7 @@ describe('GeminiRateLimiter', () => {
     limiter.reset();
 
     const status = limiter.getStatus();
-    expect(status.requestsRemaining).toBe(1000);
+    expect(status.requestsRemaining).toBe(270);
   });
 });
 

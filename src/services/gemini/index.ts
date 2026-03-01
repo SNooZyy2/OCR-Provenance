@@ -16,9 +16,15 @@ export {
 // Configuration
 export {
   type GeminiConfig,
+  type GeminiTier,
+  type GeminiRateLimits,
   loadGeminiConfig,
   GEMINI_MODELS,
-  GEMINI_RATE_LIMIT,
+  GEMINI_TIER_LIMITS,
+  getGeminiTier,
+  getGeminiRateLimit,
+  getVlmConcurrency,
+  DATALAB_MAX_CONCURRENT_DEFAULT,
   GENERATION_PRESETS,
   ALLOWED_MIME_TYPES,
   MAX_FILE_SIZE,

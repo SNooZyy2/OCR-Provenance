@@ -46,6 +46,7 @@ import type { ImageReference, VLMResult, VLMStructuredData } from '../../models/
 import { ProvenanceType, type ProvenanceRecord } from '../../models/provenance.js';
 import { ImageOptimizer, getImageOptimizer } from '../images/optimizer.js';
 import type { ImageOptimizationConfig } from '../../server/types.js';
+import { getVlmConcurrency } from '../gemini/config.js';
 
 /**
  * Pipeline configuration options
@@ -69,7 +70,7 @@ export interface PipelineConfig {
 
 const DEFAULT_CONFIG: PipelineConfig = {
   batchSize: 10,
-  concurrency: 5,
+  concurrency: 0, // 0 = use tier default from getVlmConcurrency()
   minConfidence: 0.5,
   useUniversalPrompt: true,
   skipEmbeddings: false,
@@ -155,6 +156,13 @@ export class VLMPipeline {
         vlmSkipBelowSize: this.config.imageOptimization.vlmSkipBelowSize,
         minRelevanceScore: this.config.imageOptimization.vlmMinRelevance,
       });
+
+    // Resolve concurrency: 0 means use tier default from config
+    if (this.config.concurrency === 0) {
+      this.config = { ...this.config, concurrency: getVlmConcurrency() };
+    }
+
+    console.error(`[VLMPipeline] Initialized (concurrency=${this.config.concurrency})`);
   }
 
   /**
@@ -258,15 +266,21 @@ export class VLMPipeline {
   }
 
   /**
-   * Process a batch of images with rate limiting and exponential backoff.
+   * Process a batch of images in parallel with concurrency control.
    *
-   * F-INTEG-9: Uses exponential backoff on 429/5xx errors (1s -> 2s -> 4s -> ... -> 32s max).
+   * Uses a semaphore pattern: N worker loops pull from a shared index.
+   * The Gemini rate limiter handles throttling — no courtesy delays needed.
    * Aborts batch after 5 consecutive failures to avoid wasting resources.
+   *
+   * Thread safety: nextIndex++ is safe because JS is single-threaded for
+   * synchronous code — the increment happens before the async yield.
+   * failuresSinceLastSuccess is intentionally shared across workers: any
+   * success from any worker resets it. This makes the abort threshold mean
+   * "5 failures without any intervening success across all workers".
    */
   private async processBatch(images: ImageReference[]): Promise<ProcessingResult[]> {
-    const BASE_DELAY_MS = 100; // 100ms courtesy delay; rate limiter handles throttling (FIX-P0-2)
-    const MAX_DELAY_MS = 32000; // 32 second max backoff
-    const MAX_CONSECUTIVE_FAILURES = 5; // Abort batch after this many consecutive failures
+    const MAX_CONSECUTIVE_FAILURES = 5;
+    const concurrency = this.config.concurrency;
 
     // Mark all as processing (returns false if image not in 'pending' state)
     const claimedImages: ImageReference[] = [];
@@ -279,84 +293,94 @@ export class VLMPipeline {
       claimedImages.push(img);
     }
 
-    // Process SEQUENTIALLY with rate limiting (no concurrency)
+    if (claimedImages.length === 0) return [];
+
+    console.error(
+      `[VLMPipeline] Processing ${claimedImages.length} images (concurrency=${concurrency})`
+    );
+
     const results: ProcessingResult[] = [];
-    let currentDelay = BASE_DELAY_MS;
-    let consecutiveFailures = 0;
+    let failuresSinceLastSuccess = 0;
+    let aborted = false;
 
-    for (let i = 0; i < claimedImages.length; i++) {
-      const img = claimedImages[i];
+    // Shared index for the worker pool — safe because nextIndex++ is synchronous
+    let nextIndex = 0;
+    // Track indices claimed by workers to avoid duplicate abort results
+    const claimedIndices = new Set<number>();
 
-      // Abort batch if too many consecutive failures (likely API outage)
-      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        console.error(
-          `[VLMPipeline] Aborting batch: ${MAX_CONSECUTIVE_FAILURES} consecutive failures. ` +
-            `Processed ${results.length}/${claimedImages.length} images.`
-        );
-        // Mark remaining as failed so they can be retried later
-        for (let j = i; j < claimedImages.length; j++) {
-          try {
-            setImageVLMFailed(
-              this.db,
-              claimedImages[j].id,
-              'Batch aborted: too many consecutive failures'
-            );
-          } catch (error) {
+    const processNext = async (): Promise<void> => {
+      while (nextIndex < claimedImages.length && !aborted) {
+        // Check abort condition
+        if (failuresSinceLastSuccess >= MAX_CONSECUTIVE_FAILURES) {
+          if (!aborted) {
+            aborted = true;
             console.error(
-              `[VLMPipeline] Failed to mark image ${claimedImages[j].id} as failed during batch abort: ${String(error)}`
+              `[VLMPipeline] Aborting batch: ${MAX_CONSECUTIVE_FAILURES} failures since last success. ` +
+                `Processed ${results.length}/${claimedImages.length} images.`
             );
+            // Mark remaining unclaimed images as failed (skip indices already grabbed by workers)
+            for (let j = nextIndex; j < claimedImages.length; j++) {
+              if (claimedIndices.has(j)) continue;
+              try {
+                setImageVLMFailed(
+                  this.db,
+                  claimedImages[j].id,
+                  'Batch aborted: too many consecutive failures'
+                );
+              } catch (error) {
+                console.error(
+                  `[VLMPipeline] Failed to mark image ${claimedImages[j].id} as failed: ${String(error)}`
+                );
+              }
+              results.push({
+                imageId: claimedImages[j].id,
+                success: false,
+                error: 'Batch aborted: too many consecutive failures',
+                processingTimeMs: 0,
+              });
+            }
           }
+          return;
+        }
+
+        const idx = nextIndex++;
+        claimedIndices.add(idx);
+        const img = claimedImages[idx];
+
+        console.error(
+          `[VLMPipeline] Processing image ${idx + 1}/${claimedImages.length}: ${img.id}`
+        );
+
+        try {
+          const result = await this.processImage(img);
+          results.push(result);
+
+          if (result.success) {
+            failuresSinceLastSuccess = 0;
+          } else {
+            failuresSinceLastSuccess++;
+            console.error(`[VLMPipeline] Failed: ${img.id} - ${result.error}`);
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          console.error(`[VLMPipeline] Error: ${img.id} - ${errorMessage}`);
           results.push({
-            imageId: claimedImages[j].id,
+            imageId: img.id,
             success: false,
-            error: 'Batch aborted: too many consecutive failures',
+            error: errorMessage,
             processingTimeMs: 0,
           });
+          failuresSinceLastSuccess++;
         }
-        break;
       }
+    };
 
-      // Rate limit: wait between requests (skip for first request)
-      if (i > 0) {
-        console.error(
-          `[VLMPipeline] Rate limiting: waiting ${currentDelay / 1000}s before next request...`
-        );
-        await new Promise((resolve) => setTimeout(resolve, currentDelay));
-      }
-
-      console.error(`[VLMPipeline] Processing image ${i + 1}/${claimedImages.length}: ${img.id}`);
-
-      try {
-        const result = await this.processImage(img);
-        results.push(result);
-
-        if (result.success) {
-          console.error(
-            `[VLMPipeline] Success: ${img.id} (confidence: ${result.confidence?.toFixed(2)})`
-          );
-          // Reset backoff on success
-          currentDelay = BASE_DELAY_MS;
-          consecutiveFailures = 0;
-        } else {
-          console.error(`[VLMPipeline] Failed: ${img.id} - ${result.error}`);
-          consecutiveFailures++;
-          // Apply exponential backoff on failure (likely 429 or 5xx)
-          currentDelay = Math.min(currentDelay * 2, MAX_DELAY_MS);
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[VLMPipeline] Error: ${img.id} - ${errorMessage}`);
-        results.push({
-          imageId: img.id,
-          success: false,
-          error: errorMessage,
-          processingTimeMs: 0,
-        });
-        consecutiveFailures++;
-        // Apply exponential backoff on error
-        currentDelay = Math.min(currentDelay * 2, MAX_DELAY_MS);
-      }
+    // Launch N concurrent workers
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < Math.min(concurrency, claimedImages.length); i++) {
+      workers.push(processNext());
     }
+    await Promise.all(workers);
 
     return results;
   }

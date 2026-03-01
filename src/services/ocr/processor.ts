@@ -12,6 +12,12 @@ import { backoffSleep } from '../../utils/backoff.js';
 import { DatabaseService } from '../storage/database/index.js';
 import type { Document, OCRResult, PageOffset } from '../../models/document.js';
 import { ProvenanceType, type ProvenanceRecord } from '../../models/provenance.js';
+import { DATALAB_MAX_CONCURRENT_DEFAULT } from '../gemini/config.js';
+
+/** Datalab upstream hard limit for concurrent requests */
+const DATALAB_UPSTREAM_MAX_CONCURRENT = 200;
+/** 90% of upstream limit - warn above this */
+const DATALAB_SAFE_MAX_CONCURRENT = 180;
 
 interface ProcessorConfig extends DatalabClientConfig {
   maxConcurrent?: number;
@@ -68,10 +74,23 @@ const DATALAB_SDK_VERSION = '1.0.0';
 const DEFAULT_EXTRAS: readonly string[] = ['extract_links', 'table_row_bboxes'];
 
 function parseMaxConcurrent(): number {
-  const raw = process.env.DATALAB_MAX_CONCURRENT ?? '3';
+  const raw = process.env.DATALAB_MAX_CONCURRENT ?? String(DATALAB_MAX_CONCURRENT_DEFAULT);
   const parsed = parseInt(raw, 10);
   if (Number.isNaN(parsed)) {
     throw new Error(`Invalid numeric env var DATALAB_MAX_CONCURRENT: "${raw}"`);
+  }
+  if (parsed < 1) {
+    throw new Error('DATALAB_MAX_CONCURRENT must be at least 1');
+  }
+  if (parsed > DATALAB_UPSTREAM_MAX_CONCURRENT) {
+    throw new Error(
+      `DATALAB_MAX_CONCURRENT=${parsed} exceeds Datalab's hard limit of ${DATALAB_UPSTREAM_MAX_CONCURRENT} concurrent requests.`
+    );
+  }
+  if (parsed > DATALAB_SAFE_MAX_CONCURRENT) {
+    console.error(
+      `[WARN] DATALAB_MAX_CONCURRENT=${parsed} exceeds 90% of Datalab's ${DATALAB_UPSTREAM_MAX_CONCURRENT} limit. Risk of 429 rate limit errors.`
+    );
   }
   return parsed;
 }
@@ -266,6 +285,8 @@ export class OCRProcessor {
         results: [],
       };
     }
+
+    console.error(`[OCRProcessor] Processing ${pending.length} pending documents (maxConcurrent=${this.maxConcurrent})`);
 
     const results: ProcessResult[] = [];
 
