@@ -15,7 +15,7 @@
 
 > *"This repo is life changing."* -- **Kunal Dalal**, Agentic Leadership Strategist
 >
-> ![Testimonial from Kunal Dalal](docs/images/testimonial-kunal-dalal.png)
+> ![Testimonial from Kunal Dalal](assets/images/testimonial-kunal-dalal.png)
 
 ---
 
