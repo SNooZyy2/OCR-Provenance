@@ -14,8 +14,10 @@
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue)](https://github.com/ChrisRoyse/OCR-Provenance/pkgs/container/ocr-provenance)
 
 > *"This repo is life changing."* -- **Kunal Dalal**, Agentic Leadership Strategist
->
-> <a><img src="assets/images/testimonial-kunal-dalal.png" alt="Testimonial from Kunal Dalal" /></a>
+
+<picture>
+  <img src="assets/images/testimonial-kunal-dalal.png" alt="Testimonial from Kunal Dalal" />
+</picture>
 
 ---
 
