@@ -969,6 +969,100 @@ File on disk
 
 ---
 
+## AI Agent Hint System
+
+Every tool response includes guidance that tells your AI what to do next. This eliminates dead ends -- the AI always knows how to continue a workflow, recover from errors, and discover related tools.
+
+### How It Works
+
+**On success**, each tool returns a `next_steps` array with contextual suggestions based on the actual results:
+
+```json
+{
+  "success": true,
+  "data": {
+    "documents": [...],
+    "total": 42,
+    "next_steps": [
+      { "tool": "ocr_document_get", "description": "Get details for a specific document by ID" },
+      { "tool": "ocr_search", "description": "Search within the corpus" },
+      { "tool": "ocr_document_structure", "description": "View a document outline (headings, tables)" }
+    ]
+  }
+}
+```
+
+**On error**, every response includes a `recovery` hint pointing to the right tool to fix the problem:
+
+```json
+{
+  "success": false,
+  "error": {
+    "category": "DATABASE_NOT_SELECTED",
+    "message": "No database selected",
+    "recovery": {
+      "tool": "ocr_db_select",
+      "hint": "Use ocr_db_list to find database names, then ocr_db_select"
+    }
+  }
+}
+```
+
+### Context-Aware Suggestions
+
+Next steps adapt to what actually happened:
+
+| Scenario | Suggested next steps |
+|----------|---------------------|
+| Search returns 0 results | Try different keywords, ingest more documents |
+| Search returns 1 result | Get chunk context, view full document, find similar |
+| Search returns many results | Get chunk context, view document, browse by page |
+| Health check finds gaps | Process pending, retry failed, run VLM on images |
+| Health check all clear | Search, browse documents |
+| Document list empty | Ingest files, scan a directory |
+| Post-ingestion | Process pending, compare documents |
+
+### Error Recovery Categories (25)
+
+Every possible error maps to a specific recovery action:
+
+| Category | Recovery tool | What to do |
+|----------|--------------|------------|
+| `DATABASE_NOT_FOUND` | `ocr_db_list` | List available databases |
+| `DATABASE_NOT_SELECTED` | `ocr_db_select` | Select a database first |
+| `DOCUMENT_NOT_FOUND` | `ocr_document_list` | Browse available documents |
+| `OCR_API_ERROR` | `ocr_health_check` | Check API key and service status |
+| `OCR_RATE_LIMIT` | `ocr_process_pending` | Wait and retry with lower concurrency |
+| `EMBEDDING_FAILED` | `ocr_health_check` | Check Python worker and GPU memory |
+| `VLM_API_ERROR` | `ocr_vlm_status` | Check Gemini API key and circuit breaker |
+| `VLM_RATE_LIMIT` | `ocr_vlm_status` | Wait for rate limit reset |
+| `GPU_OUT_OF_MEMORY` | `ocr_config_set` | Reduce embedding batch size |
+| `PATH_NOT_FOUND` | `ocr_guide` | Verify file path exists |
+| `VALIDATION_ERROR` | `ocr_guide` | Check parameter types and required fields |
+
+### The Guide Tool
+
+`ocr_guide` is a meta-tool that analyzes your current database state and recommends what to do. Pass an optional `intent` parameter to get targeted advice:
+
+| Intent | What it suggests |
+|--------|-----------------|
+| `ingest` | File ingestion and processing workflow |
+| `search` | Search strategies based on what's indexed |
+| `explore` | Browse and discover what's in the corpus |
+| `analyze` | Clustering, comparison, duplicate detection |
+| `status` | Health check, gap analysis, retry failed |
+| *(none)* | Context-aware suggestions based on current state |
+
+The guide also returns `workflow_chains` -- named multi-step sequences for common tasks:
+
+```
+find_and_read:    ocr_search -> ocr_chunk_context -> ocr_document_page
+compare_documents: ocr_comparison_discover -> ocr_document_compare -> ocr_comparison_get
+process_new:      ocr_ingest_files -> ocr_process_pending -> ocr_health_check
+```
+
+---
+
 ## Development
 
 ```bash
