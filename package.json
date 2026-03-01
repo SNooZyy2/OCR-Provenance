@@ -63,7 +63,10 @@
     "lint:py:fix": "cd python && ruff check --fix . && ruff format .",
     "lint:all": "npm run lint && npm run format:check && npm run lint:py",
     "lint:all:fix": "npm run lint:fix && npm run format && npm run lint:py:fix",
-    "check": "npm run typecheck && npm run lint:all && npm run test"
+    "check": "npm run typecheck && npm run lint:all && npm run test",
+    "docker:build": "./scripts/docker-release.sh --dry-run",
+    "docker:release": "./scripts/docker-release.sh",
+    "docker:release:gpu": "./scripts/docker-release.sh --gpu"
   },
   "dependencies": {
     "@google/genai": "^1.41.0",
