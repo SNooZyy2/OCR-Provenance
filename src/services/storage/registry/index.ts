@@ -501,6 +501,55 @@ export class RegistryService {
     return { added, removed, updated };
   }
 
+  createWorkspace(name: string, description?: string): void {
+    const existing = this.db.prepare('SELECT 1 FROM workspaces WHERE name = ?').get(name);
+    if (existing) {
+      throw new DatabaseError(
+        `Workspace "${name}" already exists`,
+        DatabaseErrorCode.WORKSPACE_ALREADY_EXISTS
+      );
+    }
+    this.db.prepare('INSERT INTO workspaces (name, description) VALUES (?, ?)').run(name, description ?? null);
+  }
+
+  addToWorkspace(workspaceName: string, databaseName: string): void {
+    const ws = this.db.prepare('SELECT 1 FROM workspaces WHERE name = ?').get(workspaceName);
+    if (!ws) throw new DatabaseError(`Workspace "${workspaceName}" not found`, DatabaseErrorCode.WORKSPACE_NOT_FOUND);
+    const db = this.db.prepare('SELECT 1 FROM databases WHERE name = ?').get(databaseName);
+    if (!db) throw new DatabaseError(`Database "${databaseName}" not found in registry`, DatabaseErrorCode.DATABASE_NOT_FOUND);
+    this.db.prepare('INSERT OR IGNORE INTO workspace_members (workspace_name, database_name) VALUES (?, ?)').run(workspaceName, databaseName);
+  }
+
+  removeFromWorkspace(workspaceName: string, databaseName: string): void {
+    const result = this.db.prepare('DELETE FROM workspace_members WHERE workspace_name = ? AND database_name = ?').run(workspaceName, databaseName);
+    if (result.changes === 0) {
+      throw new DatabaseError(
+        `Database "${databaseName}" is not a member of workspace "${workspaceName}"`,
+        DatabaseErrorCode.REGISTRY_ERROR
+      );
+    }
+  }
+
+  deleteWorkspace(name: string): void {
+    const result = this.db.prepare('DELETE FROM workspaces WHERE name = ?').run(name);
+    if (result.changes === 0) {
+      throw new DatabaseError(`Workspace "${name}" not found`, DatabaseErrorCode.WORKSPACE_NOT_FOUND);
+    }
+    // ON DELETE CASCADE handles workspace_members cleanup automatically
+  }
+
+  listWorkspaces(): Array<{ name: string; description: string | null; created_at: string }> {
+    return this.db
+      .prepare('SELECT name, description, created_at FROM workspaces ORDER BY name')
+      .all() as Array<{ name: string; description: string | null; created_at: string }>;
+  }
+
+  getWorkspace(name: string): { name: string; description: string | null; created_at: string } | null {
+    return (this.db
+      .prepare('SELECT name, description, created_at FROM workspaces WHERE name = ?')
+      .get(name) as { name: string; description: string | null; created_at: string } | undefined) ?? null;
+  }
+
   getWorkspaceMembers(workspaceName: string): string[] | null {
     const ws = this.db
       .prepare('SELECT 1 FROM workspaces WHERE name = ?')

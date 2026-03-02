@@ -1235,3 +1235,219 @@ describe('ocr_db_summary Tests', () => {
     expect(text).toContain('not found');
   });
 });
+
+// ---------------------------------------------------------------------------
+// ocr_db_workspace Tests (66-77)
+// ---------------------------------------------------------------------------
+describe('ocr_db_workspace Tests', () => {
+  it('66. workspace: create creates entry', async () => {
+    const result = await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-create-test' });
+    const parsed = parseResponse(result);
+
+    expect(result.isError).toBeUndefined();
+    expect((parsed.data as { created: boolean }).created).toBe(true);
+
+    // Source of Truth: direct SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const rows = conn.prepare('SELECT * FROM workspaces WHERE name = ?').all('ws-create-test');
+    expect(rows.length).toBe(1);
+  });
+
+  it('67. workspace: create with description', async () => {
+    const result = await databaseManagementTools.ocr_db_workspace.handler({
+      action: 'create',
+      name: 'ws-desc',
+      description: 'My workspace description',
+    });
+    const parsed = parseResponse(result);
+
+    expect(result.isError).toBeUndefined();
+    expect((parsed.data as { description: string }).description).toBe('My workspace description');
+
+    // Source of Truth: direct SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const row = conn.prepare('SELECT description FROM workspaces WHERE name = ?').get('ws-desc') as { description: string };
+    expect(row.description).toBe('My workspace description');
+  });
+
+  it('68. workspace: add_database adds member', async () => {
+    const fp = createRealDb('db-add-member');
+    RegistryService.getInstance().registerDatabase('db-add-member', fp);
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-add' });
+
+    const result = await databaseManagementTools.ocr_db_workspace.handler({
+      action: 'add_database',
+      name: 'ws-add',
+      database_name: 'db-add-member',
+    });
+    const parsed = parseResponse(result);
+
+    expect(result.isError).toBeUndefined();
+    expect((parsed.data as { database_added: string }).database_added).toBe('db-add-member');
+
+    // Source of Truth: direct SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const rows = conn.prepare('SELECT * FROM workspace_members WHERE workspace_name = ?').all('ws-add') as Array<{ database_name: string }>;
+    expect(rows.length).toBe(1);
+    expect(rows[0].database_name).toBe('db-add-member');
+  });
+
+  it('69. workspace: get returns databases', async () => {
+    const fp1 = createRealDb('db-get-a');
+    const fp2 = createRealDb('db-get-b');
+    RegistryService.getInstance().registerDatabase('db-get-a', fp1);
+    RegistryService.getInstance().registerDatabase('db-get-b', fp2);
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-get' });
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'add_database', name: 'ws-get', database_name: 'db-get-a' });
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'add_database', name: 'ws-get', database_name: 'db-get-b' });
+
+    const result = await databaseManagementTools.ocr_db_workspace.handler({ action: 'get', name: 'ws-get' });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { databases: string[]; database_count: number };
+
+    expect(data.databases).toContain('db-get-a');
+    expect(data.databases).toContain('db-get-b');
+    expect(data.database_count).toBe(2);
+
+    // Source of Truth: direct SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const rows = conn.prepare('SELECT database_name FROM workspace_members WHERE workspace_name = ?').all('ws-get') as Array<{ database_name: string }>;
+    expect(rows.length).toBe(2);
+    const dbNames = rows.map(r => r.database_name).sort();
+    expect(dbNames).toEqual(['db-get-a', 'db-get-b']);
+  });
+
+  it('70. workspace: list returns all workspaces', async () => {
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-list-a' });
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-list-b' });
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-list-c' });
+
+    const result = await databaseManagementTools.ocr_db_workspace.handler({ action: 'list' });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { workspaces: Array<{ name: string }>; total: number };
+
+    expect(data.total).toBe(3);
+    expect(data.workspaces.length).toBe(3);
+
+    // Source of Truth: direct SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const row = conn.prepare('SELECT COUNT(*) as cnt FROM workspaces').get() as { cnt: number };
+    expect(row.cnt).toBe(3);
+  });
+
+  it('71. workspace: remove_database removes member', async () => {
+    const fp1 = createRealDb('db-rm-a');
+    const fp2 = createRealDb('db-rm-b');
+    RegistryService.getInstance().registerDatabase('db-rm-a', fp1);
+    RegistryService.getInstance().registerDatabase('db-rm-b', fp2);
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-rm' });
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'add_database', name: 'ws-rm', database_name: 'db-rm-a' });
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'add_database', name: 'ws-rm', database_name: 'db-rm-b' });
+
+    // Verify 2 members exist before removal
+    const conn = RegistryService.getInstance().getConnection();
+    const before = conn.prepare('SELECT COUNT(*) as cnt FROM workspace_members WHERE workspace_name = ?').get('ws-rm') as { cnt: number };
+    expect(before.cnt).toBe(2);
+
+    const result = await databaseManagementTools.ocr_db_workspace.handler({
+      action: 'remove_database',
+      name: 'ws-rm',
+      database_name: 'db-rm-a',
+    });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = parseResponse(result);
+    expect((parsed.data as { database_removed: string }).database_removed).toBe('db-rm-a');
+
+    // Source of Truth: members count decreased by 1
+    const after = conn.prepare('SELECT COUNT(*) as cnt FROM workspace_members WHERE workspace_name = ?').get('ws-rm') as { cnt: number };
+    expect(after.cnt).toBe(1);
+  });
+
+  it('72. workspace: delete cascades to members', async () => {
+    const fp = createRealDb('db-cascade-del');
+    RegistryService.getInstance().registerDatabase('db-cascade-del', fp);
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-cascade' });
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'add_database', name: 'ws-cascade', database_name: 'db-cascade-del' });
+
+    const result = await databaseManagementTools.ocr_db_workspace.handler({ action: 'delete', name: 'ws-cascade' });
+
+    expect(result.isError).toBeUndefined();
+    expect((parseResponse(result).data as { deleted: boolean }).deleted).toBe(true);
+
+    // Source of Truth: both workspace and members gone
+    const conn = RegistryService.getInstance().getConnection();
+    const wsRow = conn.prepare('SELECT * FROM workspaces WHERE name = ?').get('ws-cascade');
+    expect(wsRow).toBeUndefined();
+    const memberRows = conn.prepare('SELECT * FROM workspace_members WHERE workspace_name = ?').all('ws-cascade');
+    expect(memberRows.length).toBe(0);
+  });
+
+  it('73. workspace: duplicate create throws', async () => {
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-dup' });
+
+    const result = await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-dup' });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('already exists');
+  });
+
+  it('74. workspace: add nonexistent db throws', async () => {
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-nodb' });
+
+    const result = await databaseManagementTools.ocr_db_workspace.handler({
+      action: 'add_database',
+      name: 'ws-nodb',
+      database_name: 'ghost-db-xyz',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('not found');
+  });
+
+  it('75. workspace: add to nonexistent workspace throws', async () => {
+    const fp = createRealDb('db-orphan');
+    RegistryService.getInstance().registerDatabase('db-orphan', fp);
+
+    const result = await databaseManagementTools.ocr_db_workspace.handler({
+      action: 'add_database',
+      name: 'ws-ghost',
+      database_name: 'db-orphan',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('not found');
+  });
+
+  it('76. workspace: db deletion cascades from workspace', async () => {
+    const fp = createRealDb('db-ws-cascade');
+    RegistryService.getInstance().registerDatabase('db-ws-cascade', fp);
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'create', name: 'ws-db-cascade' });
+    await databaseManagementTools.ocr_db_workspace.handler({ action: 'add_database', name: 'ws-db-cascade', database_name: 'db-ws-cascade' });
+
+    // Verify member exists before unregister
+    const conn = RegistryService.getInstance().getConnection();
+    const before = conn.prepare('SELECT COUNT(*) as cnt FROM workspace_members WHERE database_name = ?').get('db-ws-cascade') as { cnt: number };
+    expect(before.cnt).toBe(1);
+
+    // Delete database from registry (CASCADE should remove workspace_members row)
+    RegistryService.getInstance().unregisterDatabase('db-ws-cascade');
+
+    // Source of Truth: workspace_members row for that DB is gone
+    const after = conn.prepare('SELECT COUNT(*) as cnt FROM workspace_members WHERE database_name = ?').get('db-ws-cascade') as { cnt: number };
+    expect(after.cnt).toBe(0);
+
+    // Workspace itself still exists
+    const wsRow = conn.prepare('SELECT * FROM workspaces WHERE name = ?').get('ws-db-cascade');
+    expect(wsRow).toBeTruthy();
+  });
+
+  it('77. workspace: create without name throws', async () => {
+    const result = await databaseManagementTools.ocr_db_workspace.handler({ action: 'create' });
+
+    expect(result.isError).toBe(true);
+  });
+});

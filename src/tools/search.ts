@@ -3539,7 +3539,7 @@ export const searchTools: Record<string, ToolDefinition> = {
   },
   ocr_search_cross_db: {
     description:
-      '[SEARCH] Search across databases using BM25. Excludes archived databases by default. Optional workspace filter. Returns merged results with results_by_database summary.',
+      '[SEARCH] Search across databases using BM25. Excludes archived databases by default. Filter by workspace name. Returns merged results with results_by_database summary.',
     inputSchema: CrossDbSearchInput.shape,
     handler: handleCrossDbSearch,
   },

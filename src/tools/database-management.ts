@@ -70,6 +70,13 @@ const DbSummaryInput = z.object({
   database_name: z.string().optional(),
 });
 
+const DbWorkspaceInput = z.object({
+  action: z.enum(['create', 'list', 'get', 'delete', 'add_database', 'remove_database']).describe('Workspace action'),
+  name: z.string().min(1).max(64).optional().describe('Workspace name (required for all except list)'),
+  description: z.string().max(500).optional().describe('Workspace description (for create)'),
+  database_name: z.string().min(1).optional().describe('Database name (for add_database/remove_database)'),
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // HANDLER: ocr_db_search
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -541,6 +548,123 @@ async function handleDbSummary(params: Record<string, unknown>): Promise<ToolRes
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// HANDLER: ocr_db_workspace
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function handleDbWorkspace(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(DbWorkspaceInput, params);
+    const registry = RegistryService.getInstance();
+
+    // Validate required params based on action
+    if (input.action !== 'list' && !input.name) {
+      throw new DatabaseError(
+        `'name' is required for action '${input.action}'`,
+        DatabaseErrorCode.REGISTRY_ERROR
+      );
+    }
+    if ((input.action === 'add_database' || input.action === 'remove_database') && !input.database_name) {
+      throw new DatabaseError(
+        `'database_name' is required for action '${input.action}'`,
+        DatabaseErrorCode.REGISTRY_ERROR
+      );
+    }
+
+    switch (input.action) {
+      case 'create': {
+        registry.createWorkspace(input.name!, input.description);
+        return formatResponse(successResult({
+          workspace: input.name,
+          created: true,
+          description: input.description ?? null,
+          next_steps: [
+            { tool: 'ocr_db_workspace', description: 'Add databases with add_database action' },
+          ],
+        }));
+      }
+
+      case 'list': {
+        const workspaces = registry.listWorkspaces();
+        const result = workspaces.map(ws => {
+          const members = registry.getWorkspaceMembers(ws.name);
+          return { ...ws, databases: members ?? [] };
+        });
+        return formatResponse(successResult({
+          workspaces: result,
+          total: result.length,
+          next_steps: [
+            { tool: 'ocr_db_workspace', description: 'Get workspace details with get action' },
+            { tool: 'ocr_search_cross_db', description: 'Search within a workspace' },
+          ],
+        }));
+      }
+
+      case 'get': {
+        const ws = registry.getWorkspace(input.name!);
+        if (!ws) {
+          throw new DatabaseError(`Workspace "${input.name}" not found`, DatabaseErrorCode.WORKSPACE_NOT_FOUND);
+        }
+        const members = registry.getWorkspaceMembers(input.name!);
+        return formatResponse(successResult({
+          ...ws,
+          databases: members ?? [],
+          database_count: (members ?? []).length,
+          next_steps: [
+            { tool: 'ocr_db_workspace', description: 'Add/remove databases from this workspace' },
+            { tool: 'ocr_search_cross_db', description: `Search within workspace "${input.name}"` },
+          ],
+        }));
+      }
+
+      case 'delete': {
+        registry.deleteWorkspace(input.name!);
+        return formatResponse(successResult({
+          workspace: input.name,
+          deleted: true,
+          next_steps: [
+            { tool: 'ocr_db_workspace', description: 'List remaining workspaces' },
+          ],
+        }));
+      }
+
+      case 'add_database': {
+        registry.addToWorkspace(input.name!, input.database_name!);
+        const members = registry.getWorkspaceMembers(input.name!);
+        return formatResponse(successResult({
+          workspace: input.name,
+          database_added: input.database_name,
+          databases: members ?? [],
+          next_steps: [
+            { tool: 'ocr_db_workspace', description: 'Add more databases or get workspace details' },
+            { tool: 'ocr_search_cross_db', description: `Search within workspace "${input.name}"` },
+          ],
+        }));
+      }
+
+      case 'remove_database': {
+        registry.removeFromWorkspace(input.name!, input.database_name!);
+        const members = registry.getWorkspaceMembers(input.name!);
+        return formatResponse(successResult({
+          workspace: input.name,
+          database_removed: input.database_name,
+          databases: members ?? [],
+          next_steps: [
+            { tool: 'ocr_db_workspace', description: 'Manage workspace members' },
+          ],
+        }));
+      }
+
+      default: {
+        const _exhaustive: never = input.action;
+        throw new DatabaseError(`Unknown workspace action: ${_exhaustive}`, DatabaseErrorCode.REGISTRY_ERROR);
+      }
+    }
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -619,5 +743,16 @@ export const databaseManagementTools: Record<string, ToolDefinition> = {
       database_name: z.string().optional().describe('Database name (uses current if not specified)'),
     },
     handler: handleDbSummary,
+  },
+  ocr_db_workspace: {
+    description:
+      '[MANAGE] Create, list, and manage database workspaces (groups). Workspaces let you organize related databases and search within them using ocr_search_cross_db.',
+    inputSchema: {
+      action: z.enum(['create', 'list', 'get', 'delete', 'add_database', 'remove_database']).describe('Workspace action'),
+      name: z.string().min(1).max(64).optional().describe('Workspace name (required for all except list)'),
+      description: z.string().max(500).optional().describe('Workspace description (for create)'),
+      database_name: z.string().min(1).optional().describe('Database name (for add_database/remove_database)'),
+    },
+    handler: handleDbWorkspace,
   },
 };
