@@ -24,7 +24,7 @@ import {
   databaseTools,
 } from '../../../src/tools/database.js';
 import { state, resetState, updateConfig, clearDatabase } from '../../../src/server/state.js';
-// DatabaseService import removed - not directly used in tests
+import { RegistryService } from '../../../src/services/storage/registry/index.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SQLITE-VEC AVAILABILITY CHECK
@@ -124,10 +124,12 @@ describe('handleDatabaseCreate', () => {
     tempDir = createTempDir('db-create-');
     tempDirs.push(tempDir);
     updateConfig({ defaultStoragePath: tempDir });
+    RegistryService.resetForTesting(tempDir);
   });
 
   afterEach(() => {
     clearDatabase();
+    RegistryService.close();
     resetState();
   });
 
@@ -209,10 +211,12 @@ describe('handleDatabaseList', () => {
     tempDir = createTempDir('db-list-');
     tempDirs.push(tempDir);
     updateConfig({ defaultStoragePath: tempDir });
+    RegistryService.resetForTesting(tempDir);
   });
 
   afterEach(() => {
     clearDatabase();
+    RegistryService.close();
     resetState();
   });
 
@@ -245,7 +249,7 @@ describe('handleDatabaseList', () => {
     expect(result.data?.total).toBe(3);
 
     // PHYSICAL VERIFICATION: Count .db files matches
-    const dbFiles = readdirSync(tempDir).filter((f) => f.endsWith('.db'));
+    const dbFiles = readdirSync(tempDir).filter((f) => f.endsWith('.db') && f !== '_registry.db');
     expect(dbFiles).toHaveLength(3);
   });
 
@@ -277,7 +281,7 @@ describe('handleDatabaseList', () => {
     expect(databases[0]).toHaveProperty('path');
     expect(databases[0]).toHaveProperty('size_bytes');
     expect(databases[0]).toHaveProperty('created_at');
-    expect(databases[0]).toHaveProperty('modified_at');
+    expect(databases[0]).toHaveProperty('last_accessed_at');
   });
 });
 
@@ -293,10 +297,12 @@ describe('handleDatabaseSelect', () => {
     tempDir = createTempDir('db-select-');
     tempDirs.push(tempDir);
     updateConfig({ defaultStoragePath: tempDir });
+    RegistryService.resetForTesting(tempDir);
   });
 
   afterEach(() => {
     clearDatabase();
+    RegistryService.close();
     resetState();
   });
 
@@ -361,10 +367,12 @@ describe('handleDatabaseStats', () => {
     tempDir = createTempDir('db-stats-');
     tempDirs.push(tempDir);
     updateConfig({ defaultStoragePath: tempDir });
+    RegistryService.resetForTesting(tempDir);
   });
 
   afterEach(() => {
     clearDatabase();
+    RegistryService.close();
     resetState();
   });
 
@@ -474,10 +482,12 @@ describe('handleDatabaseDelete', () => {
     tempDir = createTempDir('db-delete-');
     tempDirs.push(tempDir);
     updateConfig({ defaultStoragePath: tempDir });
+    RegistryService.resetForTesting(tempDir);
   });
 
   afterEach(() => {
     clearDatabase();
+    RegistryService.close();
     resetState();
   });
 
@@ -549,17 +559,19 @@ describe('Edge Cases', () => {
     tempDir = createTempDir('db-edge-');
     tempDirs.push(tempDir);
     updateConfig({ defaultStoragePath: tempDir });
+    RegistryService.resetForTesting(tempDir);
   });
 
   afterEach(() => {
     clearDatabase();
+    RegistryService.close();
     resetState();
   });
 
   describe('Edge Case 1: Empty Database List', () => {
     it.skipIf(!sqliteVecAvailable)('returns empty list when no databases exist', async () => {
       // BEFORE: No .db files in storage path
-      const filesBefore = readdirSync(tempDir).filter((f) => f.endsWith('.db'));
+      const filesBefore = readdirSync(tempDir).filter((f) => f.endsWith('.db') && f !== '_registry.db');
       expect(filesBefore).toHaveLength(0);
 
       // ACTION: Call handleDatabaseList
@@ -572,7 +584,7 @@ describe('Edge Cases', () => {
       expect(result.data?.total).toBe(0);
 
       // PHYSICAL: ls shows empty directory (no .db files)
-      const filesAfter = readdirSync(tempDir).filter((f) => f.endsWith('.db'));
+      const filesAfter = readdirSync(tempDir).filter((f) => f.endsWith('.db') && f !== '_registry.db');
       expect(filesAfter).toHaveLength(0);
     });
   });
@@ -583,7 +595,7 @@ describe('Edge Cases', () => {
 
       // BEFORE: Database "mydb" exists
       await handleDatabaseCreate({ name, storage_path: tempDir });
-      const filesBefore = readdirSync(tempDir).filter((f) => f.endsWith('.db'));
+      const filesBefore = readdirSync(tempDir).filter((f) => f.endsWith('.db') && f !== '_registry.db');
       expect(filesBefore).toHaveLength(1);
       clearDatabase();
 
@@ -596,7 +608,7 @@ describe('Edge Cases', () => {
       expect(result.error?.category).toBe('DATABASE_ALREADY_EXISTS');
 
       // PHYSICAL: Only one .db file exists (not duplicated)
-      const filesAfter = readdirSync(tempDir).filter((f) => f.endsWith('.db'));
+      const filesAfter = readdirSync(tempDir).filter((f) => f.endsWith('.db') && f !== '_registry.db');
       expect(filesAfter).toHaveLength(1);
     });
   });

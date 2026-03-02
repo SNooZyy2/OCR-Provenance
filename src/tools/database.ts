@@ -32,6 +32,8 @@ import {
 } from '../utils/validation.js';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
 import { logAudit } from '../services/audit.js';
+import { RegistryService } from '../services/storage/registry/index.js';
+import type { SearchFilters as RegistrySearchFilters } from '../services/storage/registry/types.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATABASE TOOL HANDLERS
@@ -48,6 +50,10 @@ export async function handleDatabaseCreate(
     const db = createDatabase(input.name, input.description, input.storage_path);
     const path = db.getPath();
 
+    // Register in the database registry
+    const registry = RegistryService.getInstance();
+    registry.registerDatabase(input.name, path, input.description, input.tags, input.metadata);
+
     logAudit({
       action: 'db_create',
       entityType: 'database',
@@ -61,6 +67,8 @@ export async function handleDatabaseCreate(
         path,
         created: true,
         description: input.description,
+        tags: input.tags ?? [],
+        metadata: input.metadata ?? {},
         next_steps: [
           { tool: 'ocr_db_select', description: 'Select this database to start using it' },
           { tool: 'ocr_ingest_files', description: 'Ingest files into the new database' },
@@ -82,44 +90,56 @@ export async function handleDatabaseList(
     const input = validateInput(DatabaseListInput, params);
     const limit = input.limit ?? 50;
     const offset = input.offset ?? 0;
-    const storagePath = getDefaultStoragePath();
-    const allDatabases = DatabaseService.list(storagePath);
+    const registry = RegistryService.getInstance();
 
-    // Apply pagination
+    const filters: RegistrySearchFilters = {
+      status: input.filter_status ?? 'active',
+      tags: input.filter_tags,
+    };
+    const allDatabases = input.filter_name
+      ? registry.search(input.filter_name, filters)
+      : registry.search('', filters);
+
+    // Sort
+    const sortBy = input.sort_by ?? 'name';
+    const sortOrder = input.sort_order ?? 'asc';
+    const sortMultiplier = sortOrder === 'desc' ? -1 : 1;
+    allDatabases.sort((a, b) => {
+      let cmp = 0;
+      switch (sortBy) {
+        case 'name': cmp = a.name.localeCompare(b.name); break;
+        case 'created': cmp = a.created_at.localeCompare(b.created_at); break;
+        case 'modified': cmp = (a.last_accessed_at ?? '').localeCompare(b.last_accessed_at ?? ''); break;
+        case 'last_accessed': cmp = (a.last_accessed_at ?? '').localeCompare(b.last_accessed_at ?? ''); break;
+        case 'size': cmp = a.size_bytes - b.size_bytes; break;
+      }
+      return cmp * sortMultiplier;
+    });
+
+    // Paginate
     const totalCount = allDatabases.length;
     const databases = allDatabases.slice(offset, offset + limit);
 
-    const items = databases.map((dbInfo) => {
+    const items = databases.map(db => {
       const item: Record<string, unknown> = {
-        name: dbInfo.name,
-        path: dbInfo.path,
-        size_bytes: dbInfo.size_bytes,
-        created_at: dbInfo.created_at,
-        modified_at: dbInfo.last_modified_at,
+        name: db.name,
+        path: db.file_path,
+        size_bytes: db.size_bytes,
+        created_at: db.created_at,
+        description: db.description,
+        status: db.status,
+        tags: db.tags,
+        last_accessed_at: db.last_accessed_at,
       };
-
       if (input.include_stats) {
-        // M-17: Throw on stats errors instead of hiding them as stats_error field
-        let statsDb: DatabaseService | null = null;
-        try {
-          statsDb = DatabaseService.open(dbInfo.name, storagePath);
-          const stats = statsDb.getStats();
-          item.document_count = stats.total_documents;
-          item.chunk_count = stats.total_chunks;
-          item.embedding_count = stats.total_embeddings;
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          throw new Error(`Failed to get database stats for '${dbInfo.name}': ${errMsg}`);
-        } finally {
-          statsDb?.close();
-        }
+        item.document_count = db.document_count;
+        item.chunk_count = db.chunk_count;
+        item.embedding_count = db.embedding_count;
       }
-
       return item;
     });
 
     const hasMore = offset + limit < totalCount;
-
     return formatResponse(
       successResult({
         databases: items,
@@ -128,16 +148,8 @@ export async function handleDatabaseList(
         offset,
         limit,
         has_more: hasMore,
-        storage_path: storagePath,
         next_steps: [
-          ...(hasMore
-            ? [
-                {
-                  tool: 'ocr_db_list',
-                  description: `Get next page (offset=${offset + limit})`,
-                },
-              ]
-            : []),
+          ...(hasMore ? [{ tool: 'ocr_db_list', description: `Get next page (offset=${offset + limit})` }] : []),
           { tool: 'ocr_db_select', description: 'Select a database to work with' },
           { tool: 'ocr_db_create', description: 'Create a new database' },
           { tool: 'ocr_search_cross_db', description: 'Search across all databases' },
@@ -158,6 +170,11 @@ export async function handleDatabaseSelect(
   try {
     const input = validateInput(DatabaseSelectInput, params);
     selectDatabase(input.database_name);
+
+    // Record access in registry
+    const registry = RegistryService.getInstance();
+    registry.recordAccess(input.database_name, 'select');
+    const registryEntry = registry.getDatabase(input.database_name);
 
     const { db, vector } = requireDatabase();
     const stats = db.getStats();
@@ -180,6 +197,10 @@ export async function handleDatabaseSelect(
           embedding_count: stats.total_embeddings,
           vector_count: vector.getVectorCount(),
         },
+        description: registryEntry?.description ?? null,
+        tags: registryEntry?.tags ?? [],
+        metadata: registryEntry?.metadata ?? {},
+        access_count: registryEntry?.access_count ?? 0,
         next_steps: [
           { tool: 'ocr_document_list', description: 'Browse documents in this database' },
           { tool: 'ocr_search', description: 'Search for content across all documents' },
@@ -312,6 +333,20 @@ export async function handleDatabaseStats(
       try {
         const vector = new VectorService(db.getConnection());
         const result = buildStatsResponse(db, vector);
+
+        // Sync stats to registry
+        try {
+          const registry = RegistryService.getInstance();
+          registry.syncStats(input.database_name, {
+            document_count: result.document_count as number,
+            chunk_count: result.chunk_count as number,
+            embedding_count: result.embedding_count as number,
+            size_bytes: result.size_bytes as number,
+          });
+        } catch (syncError) {
+          console.error(`[database] Registry stats sync failed: ${syncError instanceof Error ? syncError.message : String(syncError)}`);
+        }
+
         return formatResponse(successResult({ ...result, next_steps: statsNextSteps }));
       } finally {
         db.close();
@@ -321,6 +356,23 @@ export async function handleDatabaseStats(
     // Use current database
     const { db, vector } = requireDatabase();
     const result = buildStatsResponse(db, vector);
+
+    // Sync stats to registry
+    try {
+      const dbName = input.database_name ?? state.currentDatabaseName;
+      if (dbName) {
+        const registry = RegistryService.getInstance();
+        registry.syncStats(dbName, {
+          document_count: result.document_count as number,
+          chunk_count: result.chunk_count as number,
+          embedding_count: result.embedding_count as number,
+          size_bytes: result.size_bytes as number,
+        });
+      }
+    } catch (syncError) {
+      console.error(`[database] Registry stats sync failed: ${syncError instanceof Error ? syncError.message : String(syncError)}`);
+    }
+
     return formatResponse(successResult({ ...result, next_steps: statsNextSteps }));
   } catch (error) {
     return handleError(error);
@@ -336,6 +388,15 @@ export async function handleDatabaseDelete(
   try {
     const input = validateInput(DatabaseDeleteInput, params);
     deleteDatabase(input.database_name);
+
+    // Remove from registry
+    const registry = RegistryService.getInstance();
+    try {
+      registry.unregisterDatabase(input.database_name);
+    } catch (regError) {
+      // Database may have been removed from registry during reconciliation
+      console.error(`[database] Registry unregister for '${input.database_name}': ${regError instanceof Error ? regError.message : String(regError)}`);
+    }
 
     logAudit({
       action: 'db_delete',
@@ -375,6 +436,8 @@ export const databaseTools: Record<string, ToolDefinition> = {
         .describe('Database name (alphanumeric, underscore, hyphen only)'),
       description: z.string().max(500).optional().describe('Optional description for the database'),
       storage_path: z.string().optional().describe('Optional storage path override'),
+      tags: z.array(z.string().min(1).max(50)).max(20).optional().describe('Tags for categorization'),
+      metadata: z.record(z.string(), z.string().max(200)).optional().describe('Key-value metadata'),
     },
     handler: handleDatabaseCreate,
   },
@@ -396,6 +459,11 @@ export const databaseTools: Record<string, ToolDefinition> = {
         .min(0)
         .default(0)
         .describe('Number of databases to skip for pagination'),
+      filter_name: z.string().max(200).optional().describe('Filter by name substring'),
+      filter_tags: z.array(z.string()).optional().describe('Filter by tags (match any)'),
+      filter_status: z.enum(['active', 'archived', 'all']).default('active').describe('Filter by status'),
+      sort_by: z.enum(['name', 'created', 'modified', 'last_accessed', 'size']).default('name').describe('Sort field'),
+      sort_order: z.enum(['asc', 'desc']).default('asc').describe('Sort direction'),
     },
     handler: handleDatabaseList,
   },

@@ -10,6 +10,8 @@
  */
 
 import { updateConfig } from './state.js';
+import { RegistryService } from '../services/storage/registry/index.js';
+import { DEFAULT_STORAGE_PATH } from '../services/storage/database/helpers.js';
 
 /**
  * Validate startup dependencies and apply environment-driven config overrides.
@@ -50,4 +52,20 @@ export function validateStartupDependencies(): void {
     updateConfig({ embeddingDevice });
     console.error(`[Config] EMBEDDING_DEVICE=${embeddingDevice}`);
   }
+
+  // Initialize database registry and reconcile with filesystem
+  try {
+    const registry = RegistryService.getInstance();
+    registry.reconcile(DEFAULT_STORAGE_PATH);
+    const count = registry.getDatabaseCount();
+    console.error(`[startup] Registry initialized: ${count} database(s) tracked`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[startup] FATAL: Registry initialization failed: ${msg}`);
+    throw error;
+  }
 }
+
+process.on('exit', () => {
+  try { RegistryService.close(); } catch { /* ignore */ }
+});

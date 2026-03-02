@@ -123,6 +123,8 @@ export const DatabaseCreateInput = z.object({
     ),
   description: z.string().max(500, 'Description must be 500 characters or less').optional(),
   storage_path: z.string().optional(),
+  tags: z.array(z.string().min(1).max(50)).max(20).optional(),
+  metadata: z.record(z.string(), z.string().max(200)).optional(),
 });
 
 /**
@@ -143,6 +145,11 @@ export const DatabaseListInput = z.object({
     .min(0)
     .default(0)
     .describe('Number of databases to skip for pagination'),
+  filter_name: z.string().max(200).optional(),
+  filter_tags: z.array(z.string()).optional(),
+  filter_status: z.enum(['active', 'archived', 'all']).default('active'),
+  sort_by: z.enum(['name', 'created', 'modified', 'last_accessed', 'size']).default('name'),
+  sort_order: z.enum(['asc', 'desc']).default('asc'),
 });
 
 /**
