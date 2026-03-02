@@ -4,13 +4,13 @@
 
 [![Watch the video](https://img.youtube.com/vi/h9E1LG2YRZ8/maxresdefault.jpg)](https://youtu.be/h9E1LG2YRZ8)
 
-> **Watch:** [System Overview & Installation Guide](https://youtu.be/h9E1LG2YRZ8) | [How the Storage System Works](https://youtu.be/yRYbtpskcV8)
+> **Watch:** [System Overview & Installation Guide](https://youtu.be/h9E1LG2YRZ8) | [How the Storage System Works](https://youtu.be/yRYbtpskcV8) | [Database System Deep Dive](https://youtu.be/ZuWqIodbxKc)
 
 [![npm](https://img.shields.io/npm/v/ocr-provenance-mcp)](https://www.npmjs.com/package/ocr-provenance-mcp)
 [![License: Dual](https://img.shields.io/badge/License-Free_Non--Commercial-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-1.0-purple)](https://modelcontextprotocol.io/)
-[![Tools](https://img.shields.io/badge/MCP_Tools-141-orange)](#tool-reference-141-tools)
-[![Tests](https://img.shields.io/badge/Tests-2%2C639_passing-brightgreen)](#development)
+[![Tools](https://img.shields.io/badge/MCP_Tools-149-orange)](#tool-reference-149-tools)
+[![Tests](https://img.shields.io/badge/Tests-2%2C805_passing-brightgreen)](#development)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue)](https://github.com/ChrisRoyse/OCR-Provenance/pkgs/container/ocr-provenance)
 
 > *"This repo is life changing."* -- **Kunal Dalal**, Agentic Leadership Strategist
@@ -71,7 +71,7 @@ AI is powerful, but it can't work with messy data. And real-world data is always
 
 Your documents are trapped in PDFs, scanned images, Word files, spreadsheets, and presentations. Claude can't natively read a 500-page contract PDF. It can't search across 3,000 discovery documents. It can't compare two versions of a lease agreement or find every mention of a specific clause across a corpus of legal filings.
 
-**This server is a data cleaning pipeline that makes your documents AI-ready.** It takes your messy files -- all 18 supported formats -- and converts them into clean, chunked, embedded, searchable text with full provenance tracking. Then it exposes 141 tools that let the AI search, navigate, compare, and reason over that data.
+**This server is a data cleaning pipeline that makes your documents AI-ready.** It takes your messy files -- all 18 supported formats -- and converts them into clean, chunked, embedded, searchable text with full provenance tracking. Then it exposes 149 tools that let the AI search, navigate, compare, and reason over that data.
 
 You don't need clean data. You need this system. It gives the AI the tools to clean the data itself.
 
@@ -101,7 +101,7 @@ Your messy files (PDF, DOCX, XLSX, scanned images, presentations...)
   (you can prove exactly where every answer came from)
     |
     v
-  141 tools available to your AI -- search, compare, cluster, tag,
+  149 tools available to your AI -- search, compare, cluster, tag,
   extract tables, fill forms, track obligations, verify integrity
 ```
 
@@ -178,8 +178,10 @@ Each database is fully isolated. Create one per case, project, or client.
 ## Managing Databases and the AI's Context Window
 
 [![Storage System Explained](https://img.youtube.com/vi/yRYbtpskcV8/maxresdefault.jpg)](https://youtu.be/yRYbtpskcV8)
+[![Database System Deep Dive](https://img.youtube.com/vi/ZuWqIodbxKc/maxresdefault.jpg)](https://youtu.be/ZuWqIodbxKc)
 
 > **Watch:** [How the Storage System Works](https://youtu.be/yRYbtpskcV8) -- a walkthrough of how databases isolate your data and keep AI searches focused.
+> [Database System Deep Dive](https://youtu.be/ZuWqIodbxKc) -- covers the registry layer, swappable AI brains, context contamination prevention, and the full data pipeline from OCR to embeddings.
 
 The key to getting good results from this system is understanding how databases control what the AI can see. Each database is an isolated SQLite file. When you select a database, all search tools only operate on the documents stored inside it. This is how you manage the AI's context window -- by choosing exactly what data it has access to.
 
@@ -213,6 +215,31 @@ When the AI searches 1,200 documents and narrows down to 4 relevant ones, it can
 ### Capacity
 
 Each database supports up to ~4 million documents before semantic search quality degrades. For most use cases, you'll never hit this limit. If you do, split into multiple databases by topic, date range, or case.
+
+### Advanced database management
+
+For power users who need more control, there are 8 additional database management tools beyond the basics:
+
+| Tool | What it does |
+|------|-------------|
+| `ocr_db_search` | Full-text search across all database names, descriptions, and tags |
+| `ocr_db_recent` | Quick access to recently used databases |
+| `ocr_db_tag` | Add tags and metadata to databases for organization |
+| `ocr_db_archive` / `ocr_db_unarchive` | Hide databases from listings without deleting them |
+| `ocr_db_rename` | Rename a database (updates filesystem, registry, and internal metadata) |
+| `ocr_db_summary` | Get an AI-readable profile of a database (coverage, quality, file types) |
+| `ocr_db_workspace` | Group databases into named workspaces for scoped cross-database search |
+
+**Workspaces** let you group related databases and search across just that group:
+
+```
+"Create a workspace called 'legal' and add the contracts and compliance databases to it"
+ocr_search_cross_db { query: "liability", workspace: "legal" }
+```
+
+**Archiving** hides a database from default listings and cross-database search without deleting any data. Unarchive to bring it back.
+
+For the complete database system documentation -- registry internals, schema details, safety mechanisms, and usage patterns -- see [Database System Guide](docs/DATABASE-SYSTEM-GUIDE.md).
 
 ---
 
@@ -450,18 +477,26 @@ Health endpoint: `GET /health` -- MCP endpoint: `POST /mcp` -- Port: 3100
 
 ---
 
-## Tool Reference (141 Tools)
+## Tool Reference (149 Tools)
 
 <details>
-<summary><strong>Database Management (5)</strong></summary>
+<summary><strong>Database Management (13)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `ocr_db_create` | Create a new isolated database |
-| `ocr_db_list` | List all databases with optional stats |
-| `ocr_db_select` | Select the active database |
-| `ocr_db_stats` | Detailed statistics (documents, chunks, embeddings, images, clusters) |
-| `ocr_db_delete` | Permanently delete a database |
+| `ocr_db_create` | Create a new isolated database with optional tags and metadata |
+| `ocr_db_list` | List databases with filtering, sorting, pagination |
+| `ocr_db_select` | Select the active database (RAG swap) |
+| `ocr_db_stats` | Detailed statistics synced to central registry |
+| `ocr_db_delete` | Permanently delete a database with cascade |
+| `ocr_db_search` | Full-text search across database names, descriptions, and tags |
+| `ocr_db_recent` | Recently accessed databases ordered by last access time |
+| `ocr_db_tag` | Add, remove, or set tags and key-value metadata on databases |
+| `ocr_db_archive` | Archive a database (hidden from listings, data preserved) |
+| `ocr_db_unarchive` | Restore an archived database to active status |
+| `ocr_db_rename` | Rename a database (filesystem + registry + internal metadata) |
+| `ocr_db_summary` | AI-readable database profile with coverage stats |
+| `ocr_db_workspace` | Create and manage workspace groupings |
 
 </details>
 
@@ -856,7 +891,7 @@ docker build --build-arg COMPUTE=cu124 \
 ┌─────────────────────────────────────────────────────────────┐
 │                    MCP Server (stdio/http)                    │
 │  TypeScript + @modelcontextprotocol/sdk                     │
-│  141 tools across 27 tool modules                           │
+│  149 tools across 29 tool modules                           │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
@@ -1073,7 +1108,7 @@ process_new:      ocr_ingest_files -> ocr_process_pending -> ocr_health_check
 
 ```bash
 npm run build             # Build TypeScript
-npm test                  # All tests (2,639 across 115 test suites)
+npm test                  # All tests (2,805 across 118 test suites)
 npm run lint:all          # TypeScript + Python linting
 npm run check             # typecheck + lint + test
 ```
