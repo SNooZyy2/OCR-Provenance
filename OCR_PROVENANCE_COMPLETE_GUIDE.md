@@ -4,7 +4,7 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Version** | 1.0.14 |
+| **Version** | 1.0.15 |
 | **MCP Tools** | 149 |
 | **Schema Version** | 32 |
 | **Architecture** | TypeScript MCP server + 9 Python workers |
@@ -832,4 +832,4 @@ Valid transitions are enforced. Use `ocr_workflow_submit` to start, `ocr_workflo
 
 ---
 
-*Version 1.0.14 | Schema v32 | 149 MCP tools | 2026-03-02*
+*Version 1.0.15 | Schema v32 | 149 MCP tools | 2026-03-02*
