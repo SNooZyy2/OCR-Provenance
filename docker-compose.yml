@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     image: ocr-provenance-mcp:cpu
     container_name: ocr-provenance-mcp
+    command: ["node", "--max-semi-space-size=64", "dist/bin-http.js"]
     ports:
       - "${MCP_HTTP_PORT:-3100}:3100"
     volumes:

@@ -196,6 +196,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
 # Switch to non-root user
 USER mcp
 
-# Default: stdio mode (for AI clients using "docker run -i --rm")
-# Override with: -e MCP_TRANSPORT=http for persistent HTTP server
-CMD ["node", "--max-semi-space-size=64", "dist/bin-http.js"]
+# Default: stdio mode via bin.js (for AI clients using "docker run -i --rm")
+# For HTTP mode: use docker-compose.yml or override CMD with dist/bin-http.js
+CMD ["node", "--max-semi-space-size=64", "dist/bin.js"]

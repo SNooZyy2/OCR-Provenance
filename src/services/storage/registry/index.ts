@@ -7,7 +7,7 @@
 
 import Database from 'better-sqlite3';
 import { mkdirSync, existsSync, readdirSync, statSync } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { homedir } from 'os';
 import { DatabaseError, DatabaseErrorCode } from '../database/types.js';
 import type { RegistryEntry, RegistryEntryWithTags, SearchFilters, SearchResult, SyncStats } from './types.js';
@@ -32,16 +32,35 @@ let instance: RegistryService | null = null;
 
 function defaultRegistryDir(): string {
   const dbPath = process.env.OCR_PROVENANCE_DATABASES_PATH;
-  if (dbPath) return dirname(dbPath);
-  return join(homedir(), '.ocr-provenance');
+  if (dbPath) {
+    console.error(`[registry] Using OCR_PROVENANCE_DATABASES_PATH for registry dir: ${dbPath}`);
+    return dbPath;
+  }
+  const defaultDir = join(homedir(), '.ocr-provenance');
+  console.error(`[registry] Using default registry dir: ${defaultDir}`);
+  return defaultDir;
 }
 
 export class RegistryService {
   private db: Database.Database;
 
   private constructor(registryDir: string) {
-    mkdirSync(registryDir, { recursive: true });
-    this.db = new Database(join(registryDir, '_registry.db'));
+    const registryPath = join(registryDir, '_registry.db');
+    console.error(`[registry] Initializing registry at: ${registryPath}`);
+    try {
+      mkdirSync(registryDir, { recursive: true });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[registry] FATAL: Cannot create registry directory ${registryDir}: ${msg}`);
+      throw err;
+    }
+    try {
+      this.db = new Database(registryPath);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[registry] FATAL: Cannot open registry database at ${registryPath}: ${msg}`);
+      throw err;
+    }
     this.initialize();
   }
 

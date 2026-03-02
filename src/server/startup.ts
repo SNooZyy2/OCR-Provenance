@@ -55,6 +55,7 @@ export function validateStartupDependencies(): void {
 
   // Initialize database registry and reconcile with filesystem
   try {
+    console.error(`[startup] Databases path: ${DEFAULT_STORAGE_PATH}`);
     const registry = RegistryService.getInstance();
     registry.reconcile(DEFAULT_STORAGE_PATH);
     const count = registry.getDatabaseCount();
@@ -62,6 +63,7 @@ export function validateStartupDependencies(): void {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error(`[startup] FATAL: Registry initialization failed: ${msg}`);
+    console.error(`[startup] OCR_PROVENANCE_DATABASES_PATH=${process.env.OCR_PROVENANCE_DATABASES_PATH || '(not set)'}`);
     throw error;
   }
 }
