@@ -4,8 +4,8 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Version** | 1.0.5 |
-| **MCP Tools** | 141 |
+| **Version** | 1.0.14 |
+| **MCP Tools** | 149 |
 | **Schema Version** | 32 |
 | **Architecture** | TypeScript MCP server + 9 Python workers |
 | **Storage** | SQLite + sqlite-vec (768-dim vectors) + FTS5 (full-text) |
@@ -14,7 +14,7 @@
 | **OCR Engine** | Datalab API (PDF, DOCX, images, presentations) |
 | **Reranking** | Local cross-encoder ms-marco-MiniLM-L-12-v2 (no API) |
 | **Transport** | stdio (default) or HTTP/SSE (Docker) |
-| **Tests** | 2,639 passing across 115 test files |
+| **Tests** | 2,805 passing across 118 test files |
 
 An MCP server that gives AI agents document ingestion, OCR, search, analysis, comparison, clustering, collaboration, contract lifecycle management, and compliance auditing -- all with cryptographic provenance chains. Runs locally except Datalab OCR API and Gemini VLM API calls.
 
@@ -52,7 +52,7 @@ An MCP server that gives AI agents document ingestion, OCR, search, analysis, co
 
 **Tagging**: Cross-entity tags (documents, chunks, images, extractions, clusters) with color/description.
 
-**Multi-Database**: Full isolation per case/project/client. Cross-DB search without switching.
+**Multi-Database**: Full isolation per case/project/client. Central registry system (`_registry.db`) catalogs all databases with tags, key-value metadata, and FTS5 full-text search over names/descriptions/tags. Workspaces group related databases for scoped operations. Archive/unarchive hides databases from default listings without deleting data. Cross-DB BM25 search with workspace scoping and automatic archived database exclusion. Instant RAG context swap via `ocr_db_select` -- switches the entire search/ingest/analysis context in milliseconds.
 
 ---
 
@@ -138,7 +138,7 @@ npm install && npm run build
 
 ---
 
-## Tool Reference (141 Tools)
+## Tool Reference (149 Tools)
 
 ### Tier 1: Start Here (17 essential tools)
 
@@ -160,17 +160,26 @@ npm install && npm run build
 | `ocr_provenance_get` | Get audit trail for any item |
 | `ocr_rag_context` | Assemble search results as markdown for LLM context |
 | `ocr_tag_list` | Browse tags |
+| `ocr_db_search` | Search databases by name, tags, metadata, date, size |
 | `ocr_cluster_get` | Inspect cluster contents |
 
-### Database Management (5)
+### Database Management (13)
 
 | Tool | Description |
 |------|-------------|
-| `ocr_db_create` | Create isolated database |
-| `ocr_db_list` | List all databases with optional stats |
-| `ocr_db_select` | Activate database for all operations |
-| `ocr_db_stats` | Overview: file types, quality, clusters, counts |
+| `ocr_db_create` | Create isolated database with optional tags and metadata |
+| `ocr_db_list` | List databases with filtering, sorting, pagination |
+| `ocr_db_select` | Activate database for all operations (RAG swap) |
+| `ocr_db_stats` | Comprehensive statistics synced to registry |
 | `ocr_db_delete` | Permanently delete database with cascade |
+| `ocr_db_search` | FTS5 search across database names/descriptions/tags |
+| `ocr_db_recent` | Recently accessed databases by last access time |
+| `ocr_db_tag` | Add, remove, set, or list tags and metadata |
+| `ocr_db_archive` | Hide database from default listings (data preserved) |
+| `ocr_db_unarchive` | Restore archived database to active |
+| `ocr_db_rename` | Rename database (filesystem + registry + internal) |
+| `ocr_db_summary` | AI-readable profile with coverage stats and analytics |
+| `ocr_db_workspace` | Create/manage workspace groupings for scoped search |
 
 ### Ingestion & Processing (7)
 
@@ -194,7 +203,7 @@ npm install && npm run build
 | `ocr_benchmark_compare` | Compare results across databases |
 | `ocr_fts_manage` | Rebuild/check FTS5 index |
 | `ocr_search_saved` | action='save'\|'list'\|'get'\|'execute' |
-| `ocr_search_cross_db` | BM25 across all databases simultaneously |
+| `ocr_search_cross_db` | BM25 across all databases (workspace scoping, archive exclusion) |
 
 ### Document Management (10)
 
@@ -570,6 +579,28 @@ ocr_audit_query { action: "document_access", start_date: "2026-01-01" }
 ocr_export_audit_log { start_date: "2026-01-01", end_date: "2026-02-26" }
 ```
 
+### Workflow 8: Multi-Database Management
+
+```
+ocr_db_create { name: "contracts-2026", description: "Q1 contracts", tags: ["legal", "q1"] }
+ocr_db_create { name: "research-papers", tags: ["research", "academic"] }
+ocr_db_tag { database_name: "contracts-2026", action: "set", metadata: {"department": "legal"} }
+ocr_db_search { query: "contracts", tags: ["legal"] }
+ocr_db_select { database_name: "contracts-2026" }
+ocr_search { query: "indemnification", mode: "hybrid" }
+ocr_db_archive { database_name: "old-contracts", reason: "Superseded" }
+ocr_db_recent { limit: 5 }
+```
+
+### Workflow 9: Workspace-Scoped Search
+
+```
+ocr_db_workspace { action: "create", name: "legal", description: "All legal databases" }
+ocr_db_workspace { action: "add_database", name: "legal", database_name: "contracts-2026" }
+ocr_db_workspace { action: "add_database", name: "legal", database_name: "compliance-docs" }
+ocr_search_cross_db { query: "liability", workspace: "legal" }
+```
+
 ---
 
 ## Use Cases
@@ -801,4 +832,4 @@ Valid transitions are enforced. Use `ocr_workflow_submit` to start, `ocr_workflo
 
 ---
 
-*Version 1.0.5 | Schema v32 | 141 MCP tools | 2026-02-26*
+*Version 1.0.14 | Schema v32 | 149 MCP tools | 2026-03-02*
