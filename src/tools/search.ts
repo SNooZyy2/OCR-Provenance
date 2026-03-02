@@ -35,6 +35,8 @@ import { RRFFusion, type RankedResult } from '../services/search/fusion.js';
 import { rerankResults } from '../services/search/reranker.js';
 import { expandQuery, getExpandedTerms } from '../services/search/query-expander.js';
 import { classifyQuery, isTableQuery } from '../services/search/query-classifier.js';
+import { RegistryService } from '../services/storage/registry/index.js';
+import { DatabaseError, DatabaseErrorCode } from '../services/storage/database/types.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getImage } from '../services/storage/database/image-operations.js';
 import {
@@ -3243,6 +3245,8 @@ const CrossDbSearchInput = z.object({
     .max(500)
     .default(150)
     .describe('Maximum characters for text preview (default 150)'),
+  exclude_archived: z.boolean().default(true).describe('Exclude archived databases from search (default: true)'),
+  workspace: z.string().optional().describe('Search only databases within this workspace'),
 });
 
 /** Result from cross-database BM25 search with normalized score for cross-DB ranking. */
@@ -3270,6 +3274,33 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
 
     // Get list of databases
     let databases = listDatabases();
+
+    // Filter using registry metadata
+    try {
+      const registry = RegistryService.getInstance();
+
+      if (input.exclude_archived !== false) {
+        const archivedNames = new Set(
+          registry.search('', { status: 'archived' }).map(d => d.name)
+        );
+        databases = databases.filter(d => !archivedNames.has(d.name));
+      }
+
+      if (input.workspace) {
+        const wsMembers = registry.getWorkspaceMembers(input.workspace);
+        if (!wsMembers) {
+          throw new DatabaseError(
+            `Workspace "${input.workspace}" not found`,
+            DatabaseErrorCode.WORKSPACE_NOT_FOUND
+          );
+        }
+        const wsNames = new Set(wsMembers);
+        databases = databases.filter(d => wsNames.has(d.name));
+      }
+    } catch (registryError) {
+      if (registryError instanceof DatabaseError) throw registryError;
+      console.error(`[CrossDbSearch] Registry filter failed (searching all): ${registryError instanceof Error ? registryError.message : String(registryError)}`);
+    }
 
     // Filter to requested database_names if provided
     if (input.database_names && input.database_names.length > 0) {
@@ -3508,7 +3539,7 @@ export const searchTools: Record<string, ToolDefinition> = {
   },
   ocr_search_cross_db: {
     description:
-      '[SEARCH] Search across ALL databases using BM25. Returns merged results capped at max_total_results (default 25) with results_by_database summary. Use ocr_db_select to drill into a database.',
+      '[SEARCH] Search across databases using BM25. Excludes archived databases by default. Optional workspace filter. Returns merged results with results_by_database summary.',
     inputSchema: CrossDbSearchInput.shape,
     handler: handleCrossDbSearch,
   },

@@ -18,6 +18,7 @@ import { successResult } from '../server/types.js';
 import { validateInput } from '../utils/validation.js';
 import { MCPError, documentNotFoundError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { RegistryService } from '../services/storage/registry/index.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -477,6 +478,22 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
       selected_database: selectedDb ?? 'none',
     };
 
+    // Add recently used databases from registry
+    let recentlyUsed: Array<{ name: string; last_accessed: string | null; documents: number; description: string | null }> = [];
+    try {
+      const registry = RegistryService.getInstance();
+      const recent = registry.getRecent(5);
+      recentlyUsed = recent.map(r => ({
+        name: r.name,
+        last_accessed: r.last_accessed_at,
+        documents: r.document_count,
+        description: r.description,
+      }));
+    } catch (registryError) {
+      console.error(`[guide] Registry query failed: ${registryError instanceof Error ? registryError.message : String(registryError)}`);
+    }
+    context.recently_used = recentlyUsed;
+
     // If a database is selected, get its stats
     let docCount = 0;
     let pendingCount = 0;
@@ -578,11 +595,19 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
           priority: 'required',
         });
       } else {
+        if (recentlyUsed.length > 0) {
+          next_steps.unshift({
+            tool: 'ocr_db_select',
+            description: `Resume work on "${recentlyUsed[0].name}" (last used ${recentlyUsed[0].last_accessed})`,
+            priority: 'suggested',
+          });
+        }
         next_steps.push({
           tool: 'ocr_db_select',
           description: 'Select a database to work with (see database_names in context above)',
           priority: 'required',
         });
+        next_steps.push({ tool: 'ocr_db_search', description: 'Search databases by name/description/tags', priority: 'available' });
       }
       return formatResponse(
         successResult({

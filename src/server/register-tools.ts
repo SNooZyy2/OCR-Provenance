@@ -39,10 +39,12 @@ import { workflowTools } from '../tools/workflow.js';
 import { eventTools } from '../tools/events.js';
 import { clmTools } from '../tools/clm.js';
 import { complianceTools } from '../tools/compliance.js';
+import { databaseManagementTools } from '../tools/database-management.js';
 
 /** All tool modules in registration order */
 const allToolModules: Record<string, ToolDefinition>[] = [
   databaseTools,
+  databaseManagementTools,
   ingestionTools,
   searchTools,
   documentTools,

@@ -11,6 +11,8 @@ import { tmpdir } from 'os';
 import Database from 'better-sqlite3';
 import { RegistryService } from '../../../src/services/storage/registry/index.js';
 import { DatabaseErrorCode } from '../../../src/services/storage/database/types.js';
+import { databaseManagementTools } from '../../../src/tools/database-management.js';
+import { state } from '../../../src/server/state.js';
 
 let tempDir: string;
 let databasesDir: string;
@@ -634,5 +636,602 @@ describe('Reconcile Tests', () => {
     // Verify size_bytes was updated to > 0
     const row = conn.prepare('SELECT size_bytes FROM databases WHERE name = ?').get('sized-db') as { size_bytes: number };
     expect(row.size_bytes).toBeGreaterThan(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HANDLER TESTS (36-65) - Tests for databaseManagementTools handlers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Helper: create a real SQLite .db file with full schema tables for summary tests */
+function createFullSchemaDb(name: string): string {
+  const filePath = join(databasesDir, `${name}.db`);
+  const db = new Database(filePath);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, file_name TEXT, file_type TEXT, page_count INTEGER DEFAULT 0, status TEXT DEFAULT 'complete', created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS ocr_results (id TEXT PRIMARY KEY, document_id TEXT, parse_quality_score REAL);
+    CREATE TABLE IF NOT EXISTS chunks (id TEXT PRIMARY KEY, document_id TEXT, text TEXT, chunk_index INTEGER);
+    CREATE TABLE IF NOT EXISTS embeddings (id TEXT PRIMARY KEY, chunk_id TEXT);
+    CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, document_id TEXT, vlm_status TEXT DEFAULT 'pending');
+    CREATE TABLE IF NOT EXISTS database_metadata (id INTEGER PRIMARY KEY, database_name TEXT, created_at TEXT DEFAULT (datetime('now')), last_modified_at TEXT DEFAULT (datetime('now')), total_documents INTEGER DEFAULT 0, total_ocr_results INTEGER DEFAULT 0, total_chunks INTEGER DEFAULT 0, total_embeddings INTEGER DEFAULT 0);
+    INSERT INTO database_metadata (id, database_name) VALUES (1, '${name}');
+  `);
+  db.close();
+  return filePath;
+}
+
+/** Helper: create a .db file with database_metadata table for rename tests */
+function createDbWithMetadata(name: string): string {
+  const filePath = join(databasesDir, `${name}.db`);
+  const db = new Database(filePath);
+  db.exec('CREATE TABLE IF NOT EXISTS test_marker (id INTEGER PRIMARY KEY)');
+  db.exec('CREATE TABLE IF NOT EXISTS database_metadata (id INTEGER PRIMARY KEY, database_name TEXT)');
+  db.prepare('INSERT OR REPLACE INTO database_metadata (id, database_name) VALUES (1, ?)').run(name);
+  db.close();
+  return filePath;
+}
+
+/** Helper: parse handler response */
+function parseResponse(result: { content: Array<{ type: string; text: string }>; isError?: boolean }): Record<string, unknown> {
+  return JSON.parse(result.content[0].text);
+}
+
+// ---------------------------------------------------------------------------
+// ocr_db_search Tests (36-43)
+// ---------------------------------------------------------------------------
+describe('ocr_db_search Tests', () => {
+  it('36. returns matches by name (FTS)', async () => {
+    const fp1 = createRealDb('alpha-search');
+    const fp2 = createRealDb('beta-search');
+    RegistryService.getInstance().registerDatabase('alpha-search', fp1, 'Alpha database');
+    RegistryService.getInstance().registerDatabase('beta-search', fp2, 'Beta database');
+
+    const result = await databaseManagementTools.ocr_db_search.handler({ query: 'alpha' });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { databases: Array<{ name: string }>; total_matches: number };
+
+    expect(data.databases.length).toBe(1);
+    expect(data.databases[0].name).toBe('alpha-search');
+
+    // Verify via SQL: FTS match exists
+    const conn = RegistryService.getInstance().getConnection();
+    const ftsRow = conn.prepare("SELECT * FROM databases_fts WHERE databases_fts MATCH '\"alpha\"'").get();
+    expect(ftsRow).toBeTruthy();
+  });
+
+  it('37. returns matches by description (FTS)', async () => {
+    const fp = createRealDb('desc-test');
+    RegistryService.getInstance().registerDatabase('desc-test', fp, 'financial quarterly reports');
+
+    const result = await databaseManagementTools.ocr_db_search.handler({ query: 'financial' });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { databases: Array<{ name: string }> };
+
+    expect(data.databases.some((d: { name: string }) => d.name === 'desc-test')).toBe(true);
+
+    // Verify via SQL: description stored
+    const conn = RegistryService.getInstance().getConnection();
+    const row = conn.prepare('SELECT description FROM databases WHERE name = ?').get('desc-test') as { description: string };
+    expect(row.description).toBe('financial quarterly reports');
+  });
+
+  it('38. empty query returns all active databases', async () => {
+    const fp1 = createRealDb('all-a');
+    const fp2 = createRealDb('all-b');
+    const fp3 = createRealDb('all-c');
+    RegistryService.getInstance().registerDatabase('all-a', fp1);
+    RegistryService.getInstance().registerDatabase('all-b', fp2);
+    RegistryService.getInstance().registerDatabase('all-c', fp3);
+
+    const result = await databaseManagementTools.ocr_db_search.handler({ query: '' });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { total_matches: number };
+
+    expect(data.total_matches).toBe(3);
+
+    // Verify via SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const row = conn.prepare("SELECT COUNT(*) as cnt FROM databases WHERE status = 'active'").get() as { cnt: number };
+    expect(row.cnt).toBe(3);
+  });
+
+  it('39. filters by tags', async () => {
+    const fp1 = createRealDb('lit-db');
+    const fp2 = createRealDb('tax-db');
+    RegistryService.getInstance().registerDatabase('lit-db', fp1, 'litigation db', ['litigation']);
+    RegistryService.getInstance().registerDatabase('tax-db', fp2, 'tax db', ['tax']);
+
+    const result = await databaseManagementTools.ocr_db_search.handler({ query: '', tags: ['litigation'] });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { databases: Array<{ name: string }>; total_matches: number };
+
+    expect(data.total_matches).toBe(1);
+    expect(data.databases[0].name).toBe('lit-db');
+
+    // Verify via SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const tagRows = conn.prepare("SELECT database_name FROM database_tags WHERE tag = 'litigation'").all() as { database_name: string }[];
+    expect(tagRows.length).toBe(1);
+    expect(tagRows[0].database_name).toBe('lit-db');
+  });
+
+  it('40. filters by status archived', async () => {
+    const fp1 = createRealDb('active-s');
+    const fp2 = createRealDb('archived-s');
+    RegistryService.getInstance().registerDatabase('active-s', fp1);
+    RegistryService.getInstance().registerDatabase('archived-s', fp2);
+    RegistryService.getInstance().archive('archived-s', 'old');
+
+    const result = await databaseManagementTools.ocr_db_search.handler({ query: '', status: 'archived' });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { databases: Array<{ name: string }>; total_matches: number };
+
+    expect(data.total_matches).toBe(1);
+    expect(data.databases[0].name).toBe('archived-s');
+
+    // Verify via SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const row = conn.prepare("SELECT status FROM databases WHERE name = 'archived-s'").get() as { status: string };
+    expect(row.status).toBe('archived');
+  });
+
+  it('41. filters by min_documents', async () => {
+    const fp1 = createRealDb('few-docs');
+    const fp2 = createRealDb('many-docs');
+    RegistryService.getInstance().registerDatabase('few-docs', fp1);
+    RegistryService.getInstance().registerDatabase('many-docs', fp2);
+    RegistryService.getInstance().syncStats('many-docs', { document_count: 10, chunk_count: 100, embedding_count: 100, size_bytes: 1024 });
+
+    const result = await databaseManagementTools.ocr_db_search.handler({ query: '', min_documents: 5 });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { databases: Array<{ name: string }>; total_matches: number };
+
+    expect(data.total_matches).toBe(1);
+    expect(data.databases[0].name).toBe('many-docs');
+
+    // Verify via SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const row = conn.prepare('SELECT document_count FROM databases WHERE name = ?').get('many-docs') as { document_count: number };
+    expect(row.document_count).toBe(10);
+  });
+
+  it('42. respects limit parameter', async () => {
+    for (let i = 0; i < 5; i++) {
+      const fp = createRealDb(`lim-db-${i}`);
+      RegistryService.getInstance().registerDatabase(`lim-db-${i}`, fp);
+    }
+
+    const result = await databaseManagementTools.ocr_db_search.handler({ query: '', limit: 2 });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { returned: number; total_matches: number };
+
+    expect(data.returned).toBe(2);
+    expect(data.total_matches).toBe(5);
+  });
+
+  it('43. no matches returns empty array', async () => {
+    const result = await databaseManagementTools.ocr_db_search.handler({ query: 'xyznonexistent' });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { databases: Array<unknown>; total_matches: number };
+
+    expect(data.databases).toEqual([]);
+    expect(data.total_matches).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ocr_db_recent Tests (44-46)
+// ---------------------------------------------------------------------------
+describe('ocr_db_recent Tests', () => {
+  it('44. returns in recency order', async () => {
+    const fpA = createRealDb('recent-a');
+    const fpB = createRealDb('recent-b');
+    const fpC = createRealDb('recent-c');
+    RegistryService.getInstance().registerDatabase('recent-a', fpA);
+    RegistryService.getInstance().registerDatabase('recent-b', fpB);
+    RegistryService.getInstance().registerDatabase('recent-c', fpC);
+
+    // Set distinct timestamps via direct SQL
+    const conn = RegistryService.getInstance().getConnection();
+    conn.prepare("UPDATE databases SET last_accessed_at = '2026-01-01 08:00:00', access_count = 1 WHERE name = 'recent-a'").run();
+    conn.prepare("UPDATE databases SET last_accessed_at = '2026-01-01 10:00:00', access_count = 1 WHERE name = 'recent-b'").run();
+    conn.prepare("UPDATE databases SET last_accessed_at = '2026-01-01 09:00:00', access_count = 1 WHERE name = 'recent-c'").run();
+
+    const result = await databaseManagementTools.ocr_db_recent.handler({ limit: 3 });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { databases: Array<{ name: string }> };
+
+    expect(data.databases[0].name).toBe('recent-b');
+    expect(data.databases[1].name).toBe('recent-c');
+    expect(data.databases[2].name).toBe('recent-a');
+
+    // Verify via SQL
+    const rows = conn.prepare('SELECT name FROM databases WHERE last_accessed_at IS NOT NULL ORDER BY last_accessed_at DESC').all() as { name: string }[];
+    expect(rows[0].name).toBe('recent-b');
+  });
+
+  it('45. empty when nothing accessed', async () => {
+    const fp = createRealDb('no-access');
+    RegistryService.getInstance().registerDatabase('no-access', fp);
+
+    const result = await databaseManagementTools.ocr_db_recent.handler({});
+    const parsed = parseResponse(result);
+    const data = parsed.data as { databases: Array<unknown>; total: number };
+
+    expect(data.databases).toEqual([]);
+    expect(data.total).toBe(0);
+  });
+
+  it('46. access_count reflects multiple accesses', async () => {
+    const fp = createRealDb('multi-access');
+    RegistryService.getInstance().registerDatabase('multi-access', fp);
+    RegistryService.getInstance().recordAccess('multi-access', 'read');
+    RegistryService.getInstance().recordAccess('multi-access', 'read');
+    RegistryService.getInstance().recordAccess('multi-access', 'search');
+
+    const result = await databaseManagementTools.ocr_db_recent.handler({ limit: 1 });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { databases: Array<{ access_count: number }> };
+
+    expect(data.databases.length).toBe(1);
+    expect(data.databases[0].access_count).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ocr_db_tag Tests (47-52)
+// ---------------------------------------------------------------------------
+describe('ocr_db_tag Tests', () => {
+  it('47. add tags', async () => {
+    const fp = createRealDb('tag-add-db');
+    RegistryService.getInstance().registerDatabase('tag-add-db', fp);
+
+    const result = await databaseManagementTools.ocr_db_tag.handler({
+      database_name: 'tag-add-db',
+      action: 'add',
+      tags: ['a', 'b'],
+    });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { tags: string[] };
+
+    expect(data.tags.sort()).toEqual(['a', 'b']);
+
+    // Verify via SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const rows = conn.prepare('SELECT tag FROM database_tags WHERE database_name = ? ORDER BY tag').all('tag-add-db') as { tag: string }[];
+    expect(rows.map(r => r.tag)).toEqual(['a', 'b']);
+  });
+
+  it('48. remove tags', async () => {
+    const fp = createRealDb('tag-rm-db');
+    RegistryService.getInstance().registerDatabase('tag-rm-db', fp, '', ['a', 'b', 'c']);
+
+    const result = await databaseManagementTools.ocr_db_tag.handler({
+      database_name: 'tag-rm-db',
+      action: 'remove',
+      tags: ['b'],
+    });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { tags: string[] };
+
+    expect([...data.tags].sort()).toEqual(['a', 'c']);
+
+    // Verify via SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const rows = conn.prepare('SELECT tag FROM database_tags WHERE database_name = ? ORDER BY tag').all('tag-rm-db') as { tag: string }[];
+    expect(rows.map(r => r.tag)).toEqual(['a', 'c']);
+  });
+
+  it('49. set replaces all tags', async () => {
+    const fp = createRealDb('tag-set-db');
+    RegistryService.getInstance().registerDatabase('tag-set-db', fp, '', ['old']);
+
+    const result = await databaseManagementTools.ocr_db_tag.handler({
+      database_name: 'tag-set-db',
+      action: 'set',
+      tags: ['new1', 'new2'],
+    });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { tags: string[] };
+
+    expect([...data.tags].sort()).toEqual(['new1', 'new2']);
+
+    // Verify old tag gone via SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const rows = conn.prepare('SELECT tag FROM database_tags WHERE database_name = ? ORDER BY tag').all('tag-set-db') as { tag: string }[];
+    expect(rows.map(r => r.tag)).toEqual(['new1', 'new2']);
+    expect(rows.map(r => r.tag)).not.toContain('old');
+  });
+
+  it('50. list returns current tags and metadata', async () => {
+    const fp = createRealDb('tag-list-db');
+    RegistryService.getInstance().registerDatabase('tag-list-db', fp, '', ['t1', 't2'], { owner: 'alice' });
+
+    const result = await databaseManagementTools.ocr_db_tag.handler({
+      database_name: 'tag-list-db',
+      action: 'list',
+    });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { tags: string[]; metadata: Record<string, string> };
+
+    expect([...data.tags].sort()).toEqual(['t1', 't2']);
+    expect(data.metadata).toEqual({ owner: 'alice' });
+  });
+
+  it('51. set with metadata', async () => {
+    const fp = createRealDb('tag-meta-db');
+    RegistryService.getInstance().registerDatabase('tag-meta-db', fp);
+
+    const result = await databaseManagementTools.ocr_db_tag.handler({
+      database_name: 'tag-meta-db',
+      action: 'set',
+      tags: ['t1'],
+      metadata: { client: 'acme' },
+    });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { tags: string[]; metadata: Record<string, string> };
+
+    expect(data.tags).toContain('t1');
+    expect(data.metadata.client).toBe('acme');
+
+    // Verify via SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const rows = conn.prepare('SELECT key, value FROM database_metadata_kv WHERE database_name = ?').all('tag-meta-db') as { key: string; value: string }[];
+    expect(rows.some(r => r.key === 'client' && r.value === 'acme')).toBe(true);
+  });
+
+  it('52. nonexistent database throws', async () => {
+    const result = await databaseManagementTools.ocr_db_tag.handler({
+      database_name: 'nonexistent-tag-db',
+      action: 'list',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('not found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ocr_db_archive Tests (53-55)
+// ---------------------------------------------------------------------------
+describe('ocr_db_archive Tests', () => {
+  it('53. sets status to archived with reason', async () => {
+    const fp = createRealDb('arch-handler-db');
+    RegistryService.getInstance().registerDatabase('arch-handler-db', fp);
+
+    const result = await databaseManagementTools.ocr_db_archive.handler({
+      database_name: 'arch-handler-db',
+      reason: 'old data',
+    });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { archived: boolean };
+
+    expect(data.archived).toBe(true);
+
+    // Verify via SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const row = conn.prepare('SELECT status, archive_reason FROM databases WHERE name = ?').get('arch-handler-db') as { status: string; archive_reason: string };
+    expect(row.status).toBe('archived');
+    expect(row.archive_reason).toBe('old data');
+  });
+
+  it('54. already archived throws', async () => {
+    const fp = createRealDb('double-arch-h');
+    RegistryService.getInstance().registerDatabase('double-arch-h', fp);
+    RegistryService.getInstance().archive('double-arch-h', 'first archive');
+
+    const result = await databaseManagementTools.ocr_db_archive.handler({
+      database_name: 'double-arch-h',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('already archived');
+  });
+
+  it('55. nonexistent throws', async () => {
+    const result = await databaseManagementTools.ocr_db_archive.handler({
+      database_name: 'ghost-arch',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('not found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ocr_db_unarchive Tests (56-57)
+// ---------------------------------------------------------------------------
+describe('ocr_db_unarchive Tests', () => {
+  it('56. restores to active', async () => {
+    const fp = createRealDb('unarch-handler-db');
+    RegistryService.getInstance().registerDatabase('unarch-handler-db', fp);
+    RegistryService.getInstance().archive('unarch-handler-db', 'temp');
+
+    const result = await databaseManagementTools.ocr_db_unarchive.handler({
+      database_name: 'unarch-handler-db',
+    });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { unarchived: boolean };
+
+    expect(data.unarchived).toBe(true);
+
+    // Verify via SQL
+    const conn = RegistryService.getInstance().getConnection();
+    const row = conn.prepare('SELECT status, archived_at FROM databases WHERE name = ?').get('unarch-handler-db') as { status: string; archived_at: string | null };
+    expect(row.status).toBe('active');
+    expect(row.archived_at).toBeNull();
+  });
+
+  it('57. already active throws', async () => {
+    const fp = createRealDb('active-unarch');
+    RegistryService.getInstance().registerDatabase('active-unarch', fp);
+
+    const result = await databaseManagementTools.ocr_db_unarchive.handler({
+      database_name: 'active-unarch',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('already active');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ocr_db_rename Tests (58-62)
+// ---------------------------------------------------------------------------
+describe('ocr_db_rename Tests', () => {
+  beforeEach(() => {
+    // Set state.config.defaultStoragePath so getDatabasePath resolves to our temp databasesDir
+    state.config.defaultStoragePath = databasesDir;
+  });
+
+  it('58. renames file and registry entry', async () => {
+    const filePath = createDbWithMetadata('rename-old');
+    RegistryService.getInstance().registerDatabase('rename-old', filePath);
+
+    const result = await databaseManagementTools.ocr_db_rename.handler({
+      old_name: 'rename-old',
+      new_name: 'rename-new',
+    });
+    const parsed = parseResponse(result);
+    const data = parsed.data as { old_name: string; new_name: string };
+
+    expect(data.old_name).toBe('rename-old');
+    expect(data.new_name).toBe('rename-new');
+
+    // Verify old file gone, new file exists
+    expect(existsSync(join(databasesDir, 'rename-old.db'))).toBe(false);
+    expect(existsSync(join(databasesDir, 'rename-new.db'))).toBe(true);
+
+    // Verify via SQL: old name gone, new name exists
+    const conn = RegistryService.getInstance().getConnection();
+    const oldRow = conn.prepare('SELECT COUNT(*) as cnt FROM databases WHERE name = ?').get('rename-old') as { cnt: number };
+    expect(oldRow.cnt).toBe(0);
+    const newRow = conn.prepare('SELECT COUNT(*) as cnt FROM databases WHERE name = ?').get('rename-new') as { cnt: number };
+    expect(newRow.cnt).toBe(1);
+  });
+
+  it('59. cascades tags', async () => {
+    const filePath = createDbWithMetadata('cascade-src');
+    RegistryService.getInstance().registerDatabase('cascade-src', filePath, '', ['tag1']);
+
+    await databaseManagementTools.ocr_db_rename.handler({
+      old_name: 'cascade-src',
+      new_name: 'cascade-dst',
+    });
+
+    // Verify tags exist under new name
+    const conn = RegistryService.getInstance().getConnection();
+    const oldTags = conn.prepare('SELECT COUNT(*) as cnt FROM database_tags WHERE database_name = ?').get('cascade-src') as { cnt: number };
+    expect(oldTags.cnt).toBe(0);
+    const newTags = conn.prepare('SELECT tag FROM database_tags WHERE database_name = ?').all('cascade-dst') as { tag: string }[];
+    expect(newTags.map(r => r.tag)).toContain('tag1');
+  });
+
+  it('60. updates internal database_metadata', async () => {
+    const filePath = createDbWithMetadata('internal-old');
+    RegistryService.getInstance().registerDatabase('internal-old', filePath);
+
+    await databaseManagementTools.ocr_db_rename.handler({
+      old_name: 'internal-old',
+      new_name: 'internal-new',
+    });
+
+    // Open new .db file, query database_metadata
+    const newPath = join(databasesDir, 'internal-new.db');
+    const tempDb = new Database(newPath, { readonly: true });
+    const row = tempDb.prepare('SELECT database_name FROM database_metadata WHERE id = 1').get() as { database_name: string };
+    tempDb.close();
+
+    expect(row.database_name).toBe('internal-new');
+  });
+
+  it('61. duplicate target throws', async () => {
+    const fp1 = createDbWithMetadata('dup-src');
+    const fp2 = createDbWithMetadata('dup-dst');
+    RegistryService.getInstance().registerDatabase('dup-src', fp1);
+    RegistryService.getInstance().registerDatabase('dup-dst', fp2);
+
+    const result = await databaseManagementTools.ocr_db_rename.handler({
+      old_name: 'dup-src',
+      new_name: 'dup-dst',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('already exists');
+
+    // Verify first db file still exists (no filesystem changes)
+    expect(existsSync(join(databasesDir, 'dup-src.db'))).toBe(true);
+  });
+
+  it('62. nonexistent source throws', async () => {
+    const result = await databaseManagementTools.ocr_db_rename.handler({
+      old_name: 'ghost-rename',
+      new_name: 'new-ghost',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('not found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ocr_db_summary Tests (63-65)
+// ---------------------------------------------------------------------------
+describe('ocr_db_summary Tests', () => {
+  beforeEach(() => {
+    // Set state.config.defaultStoragePath so getDatabasePath resolves to our temp databasesDir
+    state.config.defaultStoragePath = databasesDir;
+  });
+
+  it('63. returns profile for empty database', async () => {
+    const filePath = createFullSchemaDb('summary-empty');
+    RegistryService.getInstance().registerDatabase('summary-empty', filePath);
+
+    const result = await databaseManagementTools.ocr_db_summary.handler({ database_name: 'summary-empty' });
+    const parsed = parseResponse(result);
+    const data = parsed.data as {
+      name: string;
+      total_pages: number;
+      chunk_count: number;
+      embedding_count: number;
+      image_count: number;
+    };
+
+    expect(data.name).toBe('summary-empty');
+    expect(data.total_pages).toBe(0);
+    expect(data.chunk_count).toBe(0);
+    expect(data.embedding_count).toBe(0);
+    expect(data.image_count).toBe(0);
+  });
+
+  it('64. caches profile_json in registry', async () => {
+    const filePath = createFullSchemaDb('summary-cache');
+    RegistryService.getInstance().registerDatabase('summary-cache', filePath);
+
+    await databaseManagementTools.ocr_db_summary.handler({ database_name: 'summary-cache' });
+
+    // Verify profile_json is cached in registry
+    const conn = RegistryService.getInstance().getConnection();
+    const row = conn.prepare('SELECT profile_json FROM databases WHERE name = ?').get('summary-cache') as { profile_json: string | null };
+    expect(row.profile_json).not.toBeNull();
+
+    // Parse the cached profile and verify it has expected fields
+    const cached = JSON.parse(row.profile_json!);
+    expect(cached.name).toBe('summary-cache');
+    expect(cached.chunk_count).toBe(0);
+  });
+
+  it('65. nonexistent database throws', async () => {
+    const result = await databaseManagementTools.ocr_db_summary.handler({ database_name: 'ghost-summary' });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('not found');
   });
 });

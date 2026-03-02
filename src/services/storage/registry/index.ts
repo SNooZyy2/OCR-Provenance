@@ -501,6 +501,17 @@ export class RegistryService {
     return { added, removed, updated };
   }
 
+  getWorkspaceMembers(workspaceName: string): string[] | null {
+    const ws = this.db
+      .prepare('SELECT 1 FROM workspaces WHERE name = ?')
+      .get(workspaceName);
+    if (!ws) return null;
+    const rows = this.db
+      .prepare('SELECT database_name FROM workspace_members WHERE workspace_name = ?')
+      .all(workspaceName) as { database_name: string }[];
+    return rows.map(r => r.database_name);
+  }
+
   getWorkspacesForDatabase(name: string): string[] {
     const rows = this.db
       .prepare('SELECT workspace_name FROM workspace_members WHERE database_name = ?')
