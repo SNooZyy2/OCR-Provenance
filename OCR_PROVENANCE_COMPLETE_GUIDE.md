@@ -4,7 +4,7 @@
 
 | Attribute | Value |
 |-----------|-------|
-| **Version** | 1.0.15 |
+| **Version** | 1.0.16 |
 | **MCP Tools** | 149 |
 | **Schema Version** | 32 |
 | **Architecture** | TypeScript MCP server + 9 Python workers |
@@ -52,7 +52,7 @@ An MCP server that gives AI agents document ingestion, OCR, search, analysis, co
 
 **Tagging**: Cross-entity tags (documents, chunks, images, extractions, clusters) with color/description.
 
-**Multi-Database**: Full isolation per case/project/client. Central registry system (`_registry.db`) catalogs all databases with tags, key-value metadata, and FTS5 full-text search over names/descriptions/tags. Workspaces group related databases for scoped operations. Archive/unarchive hides databases from default listings without deleting data. Cross-DB BM25 search with workspace scoping and automatic archived database exclusion. Instant RAG context swap via `ocr_db_select` -- switches the entire search/ingest/analysis context in milliseconds.
+**Multi-Database**: Two-layer database design. A central **registry** (`_registry.db`) catalogs all databases with tags, key-value metadata, FTS5 full-text search over names/descriptions/tags, access tracking, and cached statistics. Each **per-database file** is a self-contained RAG system with 28 tables, FTS5 indexes, and 768-dim vectors. The registry auto-discovers new `.db` files at startup and cleans up entries for deleted ones. Workspaces group related databases for scoped cross-database search. Archive/unarchive hides databases from default listings without deleting data. Instant RAG context swap via `ocr_db_select` -- atomically switches the entire search/ingest/analysis context in milliseconds (no data loading or index building). One database is active at a time; all tools operate on the selected database. Cross-DB BM25 search with workspace scoping and automatic archived database exclusion.
 
 ---
 
@@ -135,6 +135,32 @@ docker run -d -p 3100:3100 \
 ```bash
 npm install && npm run build
 ```
+
+---
+
+## Storage Architecture
+
+The system uses a **two-layer database design**:
+
+**Layer 1: Registry** (`_registry.db`) -- a singleton SQLite catalog at `~/.ocr-provenance/_registry.db` that tracks all databases. Contains 7 tables: `databases` (name, path, status, description, cached stats), `database_tags`, `database_metadata_kv`, `workspaces`, `workspace_members`, `access_log` (append-only audit), and `databases_fts` (FTS5 search over names/descriptions/tags). The registry auto-discovers new `.db` files at startup and removes entries for deleted ones.
+
+**Layer 2: Per-Database Files** -- each database is an independent SQLite file in `~/.ocr-provenance/databases/` containing the complete schema (v32, 28+ tables). Each is a self-contained RAG system with documents, OCR results, chunks, 768-dim embeddings (nomic-embed-text-v1.5), FTS5 keyword indexes, provenance audit trail, and image metadata.
+
+```
+~/.ocr-provenance/
+├── _registry.db              # Central catalog (singleton)
+├── databases/
+│   ├── contracts.db          # Independent RAG database
+│   ├── contracts.db-wal      # WAL journal (auto-managed)
+│   ├── research.db
+│   └── ...
+└── images/                   # Extracted images per document
+    └── <document-id>/
+```
+
+**Database switching** (`ocr_db_select`): One database is active at a time. Selecting a database atomically swaps the connection -- all search, ingest, and analysis tools instantly operate on the new database. The swap is atomic (new connection opens before old closes) and takes milliseconds. Safety guards prevent switching while async operations are in-flight.
+
+**Cross-database search** (`ocr_search_cross_db`): BM25 search across all active databases simultaneously, with workspace scoping and automatic archived database exclusion. Opens each database in readonly mode independently.
 
 ---
 
@@ -832,4 +858,4 @@ Valid transitions are enforced. Use `ocr_workflow_submit` to start, `ocr_workflo
 
 ---
 
-*Version 1.0.15 | Schema v32 | 149 MCP tools | 2026-03-02*
+*Version 1.0.16 | Schema v32 | 149 MCP tools | 2026-03-02*

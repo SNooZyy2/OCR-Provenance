@@ -183,7 +183,9 @@ Each database is fully isolated. Create one per case, project, or client.
 > **Watch:** [How the Storage System Works](https://youtu.be/yRYbtpskcV8) -- a walkthrough of how databases isolate your data and keep AI searches focused.
 > [Database System Deep Dive](https://youtu.be/ZuWqIodbxKc) -- covers the registry layer, swappable AI brains, context contamination prevention, and the full data pipeline from OCR to embeddings.
 
-The key to getting good results from this system is understanding how databases control what the AI can see. Each database is an isolated SQLite file. When you select a database, all search tools only operate on the documents stored inside it. This is how you manage the AI's context window -- by choosing exactly what data it has access to.
+The system uses a **two-layer database design**. A central **registry** (`_registry.db`) acts as a catalog of all your databases -- tracking names, descriptions, tags, metadata, access patterns, and cached statistics. Each **per-database file** is an independent SQLite file containing the complete schema (28 tables, FTS5 indexes, 768-dim vectors) -- a fully self-contained RAG system. When the server starts, the registry auto-discovers any new `.db` files and cleans up entries for deleted ones.
+
+When you select a database with `ocr_db_select`, all search, ingest, and analysis tools instantly switch to operate on that database. This is how you manage the AI's context window -- by choosing exactly what data it has access to. The swap is atomic and takes milliseconds (no data loading or index building).
 
 ### One database per case (recommended starting point)
 
@@ -239,7 +241,7 @@ ocr_search_cross_db { query: "liability", workspace: "legal" }
 
 **Archiving** hides a database from default listings and cross-database search without deleting any data. Unarchive to bring it back.
 
-For the complete database system documentation -- registry internals, schema details, safety mechanisms, and usage patterns -- see [Database System Guide](docs/DATABASE-SYSTEM-GUIDE.md).
+The registry internals, schema details, and safety mechanisms are covered in the [Architecture](#architecture) section below.
 
 ---
 
@@ -911,10 +913,18 @@ docker build --build-arg COMPUTE=cu124 \
 │  │  Images · Storage                                    │   │
 │  └────┬──────────────┬──────────────┬───────────────────┘   │
 │       │              │              │                         │
-│  ┌────┴────┐   ┌────┴────┐   ┌────┴─────┐                  │
-│  │ SQLite  │   │sqlite-vec│   │ FTS5     │                  │
-│  │ 28 tbls │   │ vectors  │   │ indexes  │                  │
-│  └─────────┘   └─────────┘   └──────────┘                  │
+│  ┌────┴──────────────┴──────────────┴───────────────────┐   │
+│  │         Two-Layer Database Architecture               │   │
+│  │                                                        │   │
+│  │  _registry.db (singleton catalog)                     │   │
+│  │    └─ 7 tables: databases, tags, metadata,           │   │
+│  │       workspaces, members, access_log, FTS5          │   │
+│  │                                                        │   │
+│  │  Per-Database Files (one active at a time)            │   │
+│  │    ├─ SQLite (28 tables) + sqlite-vec (768-dim)      │   │
+│  │    ├─ FTS5 indexes (chunks, VLM, extractions, docs)  │   │
+│  │    └─ Each DB is a self-contained RAG system          │   │
+│  └──────────────────────────────────────────────────────┘   │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │            Python Workers (9 processes)               │   │
@@ -975,36 +985,61 @@ File on disk
 <details>
 <summary><strong>Data architecture (schema v32, 28 tables)</strong></summary>
 
+**Registry Layer** (`_registry.db` -- singleton catalog of all databases):
+
+| Table | Purpose |
+|-------|---------|
+| `databases` | Name, path, status, description, cached stats, access count |
+| `database_tags` | Tag associations (many-to-many, CASCADE) |
+| `database_metadata_kv` | Arbitrary key-value metadata per database |
+| `workspaces` | Named groups of databases |
+| `workspace_members` | Workspace membership (CASCADE on both FKs) |
+| `access_log` | Append-only usage audit |
+| `databases_fts` | FTS5 search over names, descriptions, and tags |
+
+**Per-Database Layer** (each `.db` file -- self-contained RAG system):
+
 | Table | Purpose |
 |-------|---------|
 | `documents` | Source files, file hash, status, page count |
 | `ocr_results` | Extracted text, JSON blocks, quality score |
 | `chunks` | Text segments with section path, heading, content types |
 | `embeddings` | 768-dim vectors with source metadata |
+| `vec_embeddings` | sqlite-vec virtual table (FLOAT[768] cosine similarity) |
 | `images` | Extracted images with VLM descriptions |
 | `extractions` | Structured data extractions |
 | `form_fills` | Form filling results |
 | `comparisons` | Document pair diffs |
-| `clusters` | Document groupings by similarity |
-| `document_clusters` | Cluster membership |
+| `clusters` / `document_clusters` | Document groupings by similarity |
 | `provenance` | Full audit trail with chain hash |
-| `tags` | Cross-entity labels |
-| `entity_tags` | Tag associations |
+| `tags` / `entity_tags` | Cross-entity labels |
 | `saved_searches` | Saved search configurations |
 | `uploaded_files` | Cloud file tracking |
 | `database_metadata` | DB-level settings |
 | `schema_version` | Migration tracking |
-| `fts_index_metadata` | FTS index state |
 | `users` | Multi-user accounts with RBAC |
 | `audit_log` | User action audit trail |
 | `annotations` | Document annotations (comments, suggestions, highlights) |
 | `document_locks` | Collaborative locking |
 | `workflow_states` | Document lifecycle state machine |
-| `approval_chains` | Multi-step approval workflows |
-| `approval_steps` | Individual approval decisions |
+| `approval_chains` / `approval_steps` | Multi-step approval workflows |
 | `obligations` | Contract obligations with due dates |
 | `playbooks` | Clause comparison playbooks |
 | `webhooks` | Event notification endpoints |
+
+**Storage layout:**
+
+```
+~/.ocr-provenance/
+├── _registry.db              # Central catalog (auto-discovers new databases)
+├── databases/
+│   ├── contracts.db          # Independent RAG database
+│   ├── contracts.db-wal      # WAL journal (auto-managed)
+│   ├── research.db
+│   └── ...
+└── images/                   # Extracted images per document
+    └── <document-id>/
+```
 
 </details>
 
