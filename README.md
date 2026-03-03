@@ -84,8 +84,8 @@ Your messy files (PDF, DOCX, XLSX, scanned images, presentations...)
   OCR extracts text from every page (Datalab API, 3 accuracy modes)
     |
     v
-  Smart chunking splits text into searchable sections
-  (respects headings, tables, page boundaries -- not arbitrary splits)
+  Hybrid section-aware chunking splits text into searchable sections
+  (respects headings, tables, code blocks, page boundaries -- not arbitrary splits)
     |
     v
   Each chunk gets a vector embedding (nomic-embed-text-v1.5, 768-dim)
@@ -446,14 +446,16 @@ API keys are stored at `~/.ocr-provenance/.env` (created by the setup wizard, pe
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `DATALAB_DEFAULT_MODE` | `accurate` | OCR mode: `fast`, `balanced`, or `accurate` |
-| `DATALAB_MAX_CONCURRENT` | `3` | Max concurrent OCR API requests |
-| `EMBEDDING_DEVICE` | `cpu` | `cpu`, `cuda`, or `mps` (auto-detected in Docker) |
-| `EMBEDDING_BATCH_SIZE` | `512` | Batch size for embedding generation |
-| `CHUNKING_SIZE` | `2000` | Target chunk size in characters |
-| `CHUNKING_OVERLAP_PERCENT` | `10` | Overlap between adjacent chunks |
-| `AUTO_CLUSTER_ENABLED` | `false` | Auto-cluster documents after processing |
-| `AUTO_CLUSTER_THRESHOLD` | `5` | Minimum documents to trigger auto-clustering |
+| `datalab_default_mode` | `balanced` | OCR mode: `fast`, `balanced`, or `accurate` |
+| `datalab_max_concurrent` | `3` | Max concurrent OCR API requests (1-10) |
+| `embedding_device` | `auto` | `auto`, `cpu`, `cuda`, `cuda:0`, or `mps` (auto-detects best available) |
+| `embedding_batch_size` | `32` | Batch size for embedding generation (1-1024) |
+| `chunk_size` | `2000` | Target chunk size in characters (100-10000) |
+| `chunk_overlap_percent` | `10` | Overlap between adjacent chunks (0-50) |
+| `max_chunk_size` | `8000` | Maximum chunk size for oversized sections |
+| `auto_cluster_enabled` | `false` | Auto-cluster documents after processing |
+| `auto_cluster_threshold` | `10` | Minimum documents to trigger auto-clustering |
+| `auto_cluster_algorithm` | `hdbscan` | Clustering algorithm: `hdbscan`, `agglomerative`, or `kmeans` |
 
 ### Environment Variables (Docker)
 
@@ -893,7 +895,7 @@ docker build --build-arg COMPUTE=cu124 \
 ┌─────────────────────────────────────────────────────────────┐
 │                    MCP Server (stdio/http)                    │
 │  TypeScript + @modelcontextprotocol/sdk                     │
-│  149 tools across 29 tool modules                           │
+│  149 tools across 28 tool modules                           │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
@@ -961,9 +963,11 @@ File on disk
   │                  └─ provenance record (type: OCR_RESULT, depth: 1)
   │
   ├─ 3. CHUNK ────► chunks table
-  │                  ├─ Hybrid section-aware chunking
-  │                  ├─ 2000 chars with 10% overlap
-  │                  ├─ section_path, heading_context, content_types
+  │                  ├─ Hybrid section-aware chunking (markdown structure + JSON blocks)
+  │                  ├─ 2000 chars target, 10% overlap, 8000 max (all configurable)
+  │                  ├─ Tables/code emit as atomic chunks; small ones merge into context
+  │                  ├─ Sentence boundary splitting, heading-only chunk merging
+  │                  ├─ section_path, heading_context, content_types, table metadata
   │                  └─ provenance records (type: CHUNK, depth: 2)
   │
   ├─ 4. EMBED ────► embeddings + vec_embeddings tables
@@ -1157,7 +1161,7 @@ src/
   bin.ts                # CLI entry point (stdio)
   bin-http.ts           # HTTP entry point
   bin-setup.ts          # Setup wizard
-  tools/                # 27 tool modules + shared.ts
+  tools/                # 28 tool modules + shared.ts
   services/             # Core services (11 domains, 80 files)
   models/               # Zod schemas and TypeScript types
   utils/                # Hash, validation, path sanitization
