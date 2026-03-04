@@ -1,6 +1,6 @@
 /**
  * Gemini API Client
- * Implements the client patterns from gemini-flash-3-dev-guide.md
+ * Implements the client patterns from gemini-3.1-flash-lite-dev-guide.md
  *
  * Modes:
  * - fast(): <2s target, temperature 0.0, JSON output
@@ -112,7 +112,7 @@ export class GeminiClient {
   private readonly config: GeminiConfig;
   private readonly rateLimiter: GeminiRateLimiter;
   private readonly circuitBreaker: CircuitBreaker;
-  private readonly _contextCache = new Map<
+  private readonly contextCache = new Map<
     string,
     { text: string; createdAt: number; ttlMs: number }
   >();
@@ -161,7 +161,7 @@ export class GeminiClient {
 
   /**
    * Thinking mode: 3-8s target, extended reasoning
-   * Uses Gemini 3's thinkingLevel (HIGH or MINIMAL)
+   * Uses Gemini 3.1 Flash-Lite's thinkingLevel (HIGH or MINIMAL)
    */
   async thinking(prompt: string, level: ThinkingLevel = 'HIGH'): Promise<GeminiResponse> {
     const preset = GENERATION_PRESETS.thinking(level);
@@ -296,7 +296,7 @@ export class GeminiClient {
         // Update rate limiter with actual usage
         this.rateLimiter.recordUsage(estimatedTokens, usage.totalTokens);
 
-        // Gemini 3 Flash known issue: returns HTTP 200 with finishReason=STOP
+        // Gemini 3.1 Flash-Lite known issue: returns HTTP 200 with finishReason=STOP
         // but empty content parts or malformed JSON. Retry on bad responses
         // instead of returning garbage that will cause downstream parse failures.
         const hasJsonMode =
@@ -308,7 +308,7 @@ export class GeminiClient {
             console.error(
               `[GeminiClient] Empty response from Gemini (attempt ${attempt + 1}/${maxAttempts}, ` +
                 `inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}). ` +
-                `Known Gemini 3 Flash issue. Retrying in ${delay}ms...`
+                `Known Gemini 3.1 Flash-Lite issue. Retrying in ${delay}ms...`
             );
             await this.sleep(delay);
             continue;
@@ -538,17 +538,17 @@ export class GeminiClient {
     this.cleanExpiredCacheEntries();
 
     // Evict oldest entry if at capacity
-    if (this._contextCache.size >= MAX_CACHE_SIZE) {
+    if (this.contextCache.size >= MAX_CACHE_SIZE) {
       let oldestKey: string | null = null;
       let oldestTime = Infinity;
-      for (const [key, entry] of this._contextCache) {
+      for (const [key, entry] of this.contextCache) {
         if (entry.createdAt < oldestTime) {
           oldestTime = entry.createdAt;
           oldestKey = key;
         }
       }
       if (oldestKey) {
-        this._contextCache.delete(oldestKey);
+        this.contextCache.delete(oldestKey);
         console.error(
           `[GeminiClient] Cache at capacity (${MAX_CACHE_SIZE}), evicted oldest entry: ${oldestKey}`
         );
@@ -557,14 +557,14 @@ export class GeminiClient {
 
     const cacheId = `cache_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     // Store context in memory for this session
-    this._contextCache.set(cacheId, {
+    this.contextCache.set(cacheId, {
       text: contextText,
       createdAt: Date.now(),
       ttlMs: ttlSeconds * 1000,
     });
 
     console.error(
-      `[GeminiClient] Created context cache ${cacheId} (${contextText.length} chars, TTL ${ttlSeconds}s, size=${this._contextCache.size}/${MAX_CACHE_SIZE})`
+      `[GeminiClient] Created context cache ${cacheId} (${contextText.length} chars, TTL ${ttlSeconds}s, size=${this.contextCache.size}/${MAX_CACHE_SIZE})`
     );
     return cacheId;
   }
@@ -576,9 +576,9 @@ export class GeminiClient {
   private cleanExpiredCacheEntries(): void {
     const now = Date.now();
     let evicted = 0;
-    for (const [key, entry] of this._contextCache) {
+    for (const [key, entry] of this.contextCache) {
       if (now - entry.createdAt > entry.ttlMs) {
-        this._contextCache.delete(key);
+        this.contextCache.delete(key);
         evicted++;
       }
     }
@@ -597,7 +597,7 @@ export class GeminiClient {
     file: FileRef,
     options: { schema?: object; mediaResolution?: MediaResolution } = {}
   ): Promise<GeminiResponse> {
-    const cached = this._contextCache.get(cacheId);
+    const cached = this.contextCache.get(cacheId);
     if (!cached) {
       throw new Error(
         `Cache not found: ${cacheId}. Create a cache first with createCachedContent().`
@@ -606,7 +606,7 @@ export class GeminiClient {
 
     // Check TTL
     if (Date.now() - cached.createdAt > cached.ttlMs) {
-      this._contextCache.delete(cacheId);
+      this.contextCache.delete(cacheId);
       throw new Error(`Cache expired: ${cacheId}. Recreate with createCachedContent().`);
     }
 
@@ -619,7 +619,7 @@ export class GeminiClient {
    * Delete a cached context
    */
   deleteCachedContent(cacheId: string): boolean {
-    return this._contextCache.delete(cacheId);
+    return this.contextCache.delete(cacheId);
   }
 
   /**

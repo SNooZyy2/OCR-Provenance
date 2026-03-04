@@ -1,6 +1,6 @@
 /**
  * Circuit Breaker Pattern for Gemini API
- * Based on gemini-flash-3-dev-guide.md:
+ * Based on gemini-3.1-flash-lite-dev-guide.md:
  * - threshold: 5 failures
  * - recovery_ms: 60000 (60 seconds)
  *

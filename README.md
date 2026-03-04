@@ -53,7 +53,7 @@ Datalab offers free credits to start. Their OCR supports three accuracy modes (f
 
 ### 2. Gemini API Key (for vision AI)
 
-Gemini Flash 3 analyzes images extracted from your documents -- describing charts, diagrams, photos, and figures so they become searchable too.
+Gemini 3.1 Flash-Lite analyzes images extracted from your documents -- describing charts, diagrams, photos, and figures so they become searchable too.
 
 1. Go to [Google AI Studio](https://aistudio.google.com/)
 2. Sign in with your Google account
@@ -61,7 +61,7 @@ Gemini Flash 3 analyzes images extracted from your documents -- describing chart
 4. Click **Create API Key** and select a project (or create one)
 5. Copy your API key
 
-The free tier is generous and more than enough to get started. The server uses the `gemini-3-flash-preview` model for fast, low-cost image analysis.
+The free tier is generous and more than enough to get started. The server uses the `gemini-3.1-flash-lite-preview` model for fast, low-cost image analysis.
 
 ---
 
@@ -91,7 +91,7 @@ Your messy files (PDF, DOCX, XLSX, scanned images, presentations...)
   Each chunk gets a vector embedding (nomic-embed-text-v1.5, 768-dim)
     |
     v
-  Images extracted and described by AI (Gemini Flash 3)
+  Images extracted and described by AI (Gemini 3.1 Flash-Lite)
     |
     v
   Full-text search index built (BM25 + FTS5)
@@ -600,9 +600,9 @@ Health endpoint: `GET /health` -- MCP endpoint: `POST /mcp` -- Port: 3100
 
 | Tool | Description |
 |------|-------------|
-| `ocr_vlm_describe` | Describe an image using Gemini 3 Flash |
+| `ocr_vlm_describe` | Describe an image using Gemini 3.1 Flash-Lite |
 | `ocr_vlm_process` | VLM-process images (pass document_id for one doc, omit for all pending) |
-| `ocr_vlm_analyze_pdf` | Analyze a PDF directly with Gemini 3 Flash (max 20MB) |
+| `ocr_vlm_analyze_pdf` | Analyze a PDF directly with Gemini 3.1 Flash-Lite (max 20MB) |
 | `ocr_vlm_status` | Service status (API config, rate limits, circuit breaker) |
 
 </details>
@@ -937,7 +937,7 @@ docker build --build-arg COMPUTE=cu124 \
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │            External APIs                              │   │
-│  │  Datalab (OCR/Forms) · Gemini 3 Flash (VLM/AI)     │   │
+│  │  Datalab (OCR/Forms) · Gemini 3.1 Flash-Lite (VLM)  │   │
 │  │  Nomic embed v1.5 (local, 768-dim)                  │   │
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘

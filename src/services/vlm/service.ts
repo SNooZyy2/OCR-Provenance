@@ -1,8 +1,8 @@
 /**
- * VLM Service - Gemini 3 Multimodal Image Analysis
+ * VLM Service - Gemini 3.1 Flash-Lite Multimodal Image Analysis
  *
  * Provides high-level API for analyzing images from legal and medical documents
- * using Google Gemini 3 Flash multimodal capabilities.
+ * using Google Gemini 3.1 Flash-Lite multimodal capabilities.
  *
  * @module services/vlm/service
  */

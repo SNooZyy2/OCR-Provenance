@@ -26,7 +26,7 @@ vi.mock('../../../src/services/gemini/client.js', () => {
   const mockImpl = () => ({
     analyzeImage: vi.fn(),
     getStatus: vi.fn().mockReturnValue({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-3.1-flash-lite-preview',
       rateLimiter: { requestsRemaining: 1000, tokensRemaining: 4000000 },
       circuitBreaker: { state: 'CLOSED' },
     }),
@@ -60,7 +60,7 @@ function makeGeminiResponse(text: string, overrides?: Partial<GeminiResponse>): 
       thinkingTokens: 0,
       totalTokens: 1200,
     },
-    model: 'gemini-3-flash-preview',
+    model: 'gemini-3.1-flash-lite-preview',
     processingTimeMs: 2500,
     ...overrides,
   };
@@ -129,7 +129,7 @@ describe('VLMService', () => {
       expect(result.description).toContain('medical laboratory report');
       expect(result.description).toContain('CBC and metabolic panel');
       expect(result.tokensUsed).toBe(1200);
-      expect(result.model).toBe('gemini-3-flash-preview');
+      expect(result.model).toBe('gemini-3.1-flash-lite-preview');
     });
 
     it('should use universal prompt by default', async () => {
@@ -250,7 +250,7 @@ describe('VLMService', () => {
     it('should return client status', () => {
       const status = service.getStatus();
 
-      expect(status.model).toBe('gemini-3-flash-preview');
+      expect(status.model).toBe('gemini-3.1-flash-lite-preview');
       expect(status.circuitBreaker.state).toBe('CLOSED');
     });
   });

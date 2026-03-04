@@ -415,10 +415,10 @@ describe('Complete Provenance Chain Verification', () => {
         source_id: imageProvId,
         root_document_id: docProvenanceId,
         content_hash: vlmHash,
-        processor: 'gemini-3-flash-preview',
+        processor: 'gemini-3.1-flash-lite-preview',
         processor_version: '3.0',
         processing_params: {
-          model: 'gemini-3-flash-preview',
+          model: 'gemini-3.1-flash-lite-preview',
           maxTokens: 1000,
           temperature: 0.2,
         },
@@ -440,7 +440,7 @@ describe('Complete Provenance Chain Verification', () => {
         )
         .run(
           SYNTHETIC.vlmDescription,
-          'gemini-3-flash-preview',
+          'gemini-3.1-flash-lite-preview',
           0.95,
           new Date().toISOString(),
           imageId

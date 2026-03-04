@@ -139,12 +139,12 @@ describe('provenance-query operations', () => {
     db.insertProvenance(p5);
     provIds.push(p5.id);
 
-    // Record 6: VLM_DESCRIPTION, processor=gemini-3-flash, depth=3, quality=0.92, duration=1500
+    // Record 6: VLM_DESCRIPTION, processor=gemini-3.1-flash-lite, depth=3, quality=0.92, duration=1500
     const p6 = createTestProvenance({
       id: uuidv4(),
       type: ProvenanceType.VLM_DESCRIPTION,
-      processor: 'gemini-3-flash-preview',
-      processor_version: '3.0.0',
+      processor: 'gemini-3.1-flash-lite-preview',
+      processor_version: '3.1.0',
       chain_depth: 3,
       processing_duration_ms: 1500,
       processing_quality_score: 0.92,
@@ -430,7 +430,7 @@ describe('provenance-query operations', () => {
       const { db } = requireDatabase();
       const stats = db.getProvenanceProcessorStats();
 
-      // We have 5 distinct processors: ingest, datalab-ocr, chunker, nomic-embed-text-v1.5, image-extractor, gemini-3-flash-preview
+      // We have 6 distinct processors: ingest, datalab-ocr, chunker, nomic-embed-text-v1.5, image-extractor, gemini-3.1-flash-lite-preview
       expect(stats.length).toBe(6);
 
       const chunkerStats = stats.find((s) => s.processor === 'chunker');

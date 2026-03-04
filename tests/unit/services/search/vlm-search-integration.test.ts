@@ -338,7 +338,7 @@ function insertTestImage(
       .prepare(
         `
       UPDATE images SET vlm_status = 'complete', vlm_description = ?,
-        vlm_model = 'gemini-3-flash-preview', vlm_confidence = 0.95,
+        vlm_model = 'gemini-3.1-flash-lite-preview', vlm_confidence = 0.95,
         vlm_processed_at = ?, vlm_tokens_used = 150
       WHERE id = ?
     `
@@ -385,9 +385,9 @@ function insertVLMEmbedding(
     content_hash: computeHash(vlmText),
     input_hash: null,
     file_hash: null,
-    processor: 'gemini-3-flash-preview',
+    processor: 'gemini-3.1-flash-lite-preview',
     processor_version: '3.0',
-    processing_params: { model: 'gemini-3-flash-preview' },
+    processing_params: { model: 'gemini-3.1-flash-lite-preview' },
     processing_duration_ms: 500,
     processing_quality_score: 0.95,
     parent_id: imageProvId,

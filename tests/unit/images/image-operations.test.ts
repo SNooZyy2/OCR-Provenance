@@ -187,7 +187,7 @@ describe('Image Operations', () => {
         description: 'Test description',
         structuredData: { imageType: 'photo' },
         embeddingId: 'emb-123',
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.1-flash-lite-preview',
         confidence: 0.95,
         tokensUsed: 500,
       });
@@ -279,7 +279,7 @@ describe('Image Operations', () => {
           numbers: ['123'],
         },
         embeddingId: 'emb-789',
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.1-flash-lite-preview',
         confidence: 0.92,
         tokensUsed: 750,
       };
@@ -289,7 +289,7 @@ describe('Image Operations', () => {
       const retrieved = getImage(db, img.id);
       expect(retrieved?.vlm_status).toBe('complete');
       expect(retrieved?.vlm_description).toBe(vlmResult.description);
-      expect(retrieved?.vlm_model).toBe('gemini-3-flash-preview');
+      expect(retrieved?.vlm_model).toBe('gemini-3.1-flash-lite-preview');
       expect(retrieved?.vlm_confidence).toBe(0.92);
       expect(retrieved?.vlm_tokens_used).toBe(750);
       expect(retrieved?.vlm_processed_at).toBeDefined();
@@ -486,7 +486,7 @@ describe('Image Operations', () => {
         description: 'Three paragraphs describing the image content in detail.',
         structuredData: { imageType: 'chart', primarySubject: 'data' },
         embeddingId: 'emb-src',
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.1-flash-lite-preview',
         confidence: 0.93,
         tokensUsed: 200,
       });
@@ -509,7 +509,7 @@ describe('Image Operations', () => {
         description: 'Detailed description',
         structuredData: { imageType: 'photo' },
         embeddingId: 'emb-src',
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.1-flash-lite-preview',
         confidence: 0.9,
         tokensUsed: 300,
       });
@@ -530,7 +530,7 @@ describe('Image Operations', () => {
       expect(copied.vlm_description).toBe('Detailed description');
       expect(copied.vlm_tokens_used).toBe(0);
       expect(copied.vlm_embedding_id).toBe('emb-src');
-      expect(copied.vlm_model).toBe('gemini-3-flash-preview');
+      expect(copied.vlm_model).toBe('gemini-3.1-flash-lite-preview');
     });
 
     it('should exclude self when searching for duplicates', () => {
@@ -589,7 +589,7 @@ describe('Image Operations', () => {
         description: 'Cross-document description',
         structuredData: { imageType: 'logo' },
         embeddingId: 'emb-cross',
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.1-flash-lite-preview',
         confidence: 0.85,
         tokensUsed: 100,
       });
@@ -685,7 +685,7 @@ describe('Image Operations', () => {
         description: 'Detailed 3-paragraph description of the source image',
         structuredData: { imageType: 'chart', primarySubject: 'data visualization' },
         embeddingId: 'emb-source',
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3.1-flash-lite-preview',
         confidence: 0.92,
         tokensUsed: 150,
       };
@@ -711,7 +711,7 @@ describe('Image Operations', () => {
       expect(copied).not.toBeNull();
       expect(copied!.vlm_status).toBe('complete');
       expect(copied!.vlm_description).toBe('Detailed 3-paragraph description of the source image');
-      expect(copied!.vlm_model).toBe('gemini-3-flash-preview');
+      expect(copied!.vlm_model).toBe('gemini-3.1-flash-lite-preview');
       expect(copied!.vlm_confidence).toBe(0.92);
       expect(copied!.vlm_tokens_used).toBe(0); // Dedup = 0 tokens
       expect(copied!.vlm_embedding_id).toBe('emb-source'); // Embedding ID copied

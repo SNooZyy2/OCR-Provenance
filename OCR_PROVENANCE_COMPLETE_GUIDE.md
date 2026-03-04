@@ -10,7 +10,7 @@
 | **Architecture** | TypeScript MCP server + 9 Python workers |
 | **Storage** | SQLite + sqlite-vec (768-dim vectors) + FTS5 (full-text) |
 | **Embedding** | nomic-embed-text-v1.5 (local GPU/CPU, 768-dim) |
-| **VLM** | Gemini 3 Flash (image analysis ONLY) |
+| **VLM** | Gemini 3.1 Flash-Lite (image analysis ONLY) |
 | **OCR Engine** | Datalab API (PDF, DOCX, images, presentations) |
 | **Reranking** | Local cross-encoder ms-marco-MiniLM-L-12-v2 (no API) |
 | **Transport** | stdio (default) or HTTP/SSE (Docker) |
@@ -32,7 +32,7 @@ An MCP server that gives AI agents document ingestion, OCR, search, analysis, co
 
 **Clustering**: HDBSCAN (auto-k), agglomerative, k-means. Auto-cluster, reassign, merge.
 
-**VLM**: Gemini 3 Flash image descriptions, batch processing, direct PDF analysis, custom prompts, VLM text searchable via FTS.
+**VLM**: Gemini 3.1 Flash-Lite image descriptions, batch processing, direct PDF analysis, custom prompts, VLM text searchable via FTS.
 
 **Provenance**: SHA-256 chain at every step. 4-depth lineage (DOCUMENT -> OCR_RESULT -> CHUNK -> EMBEDDING). Chain verification, W3C PROV export, 12+ query filters, timeline view. Merkle-like chain-hash verification.
 

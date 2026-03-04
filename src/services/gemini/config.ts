@@ -1,14 +1,14 @@
 /**
  * Gemini API Configuration
- * Based on gemini-flash-3-dev-guide.md patterns
+ * Based on gemini-3.1-flash-lite-dev-guide.md patterns
  */
 
 import { z } from 'zod';
 
-// Model IDs - gemini-3-flash-preview is the required model for ALL Gemini tasks.
-// NEVER use gemini-2.0-flash or gemini-2.5-flash — constitution mandates gemini-3-flash only.
+// Model IDs - gemini-3.1-flash-lite-preview is the required model for ALL Gemini tasks.
+// NEVER use gemini-2.0-flash, gemini-2.5-flash, or gemini-3-flash — constitution mandates gemini-3.1-flash-lite only.
 export const GEMINI_MODELS = {
-  FLASH_3: 'gemini-3-flash-preview', // Required: 1M input, 65K output, thinking mode
+  FLASH_LITE_3_1: 'gemini-3.1-flash-lite-preview', // Required: 1M input, 65K output, thinking mode
 } as const;
 
 export type GeminiModelId = (typeof GEMINI_MODELS)[keyof typeof GEMINI_MODELS];
@@ -65,7 +65,7 @@ export function getVlmConcurrency(): number {
 // Default max concurrent Datalab OCR requests (conservative default; upstream hard limit is 200)
 export const DATALAB_MAX_CONCURRENT_DEFAULT = 10;
 
-// Thinking levels for Gemini 3 (4 levels: minimal, low, medium, high)
+// Thinking levels for Gemini 3.1 Flash-Lite (4 levels: minimal, low, medium, high)
 export type ThinkingLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL';
 
 // Generation modes from the guide
@@ -91,7 +91,7 @@ export type MediaResolution = 'MEDIA_RESOLUTION_HIGH' | 'MEDIA_RESOLUTION_LOW';
 // Configuration schema
 export const GeminiConfigSchema = z.object({
   apiKey: z.string().min(1, 'GEMINI_API_KEY is required'),
-  model: z.string().default(GEMINI_MODELS.FLASH_3),
+  model: z.string().default(GEMINI_MODELS.FLASH_LITE_3_1),
 
   // Generation defaults
   maxOutputTokens: z.number().default(8192),
@@ -151,7 +151,7 @@ export function loadGeminiConfig(overrides?: Partial<GeminiConfig>): GeminiConfi
 
   const envConfig = {
     apiKey,
-    model: process.env.GEMINI_MODEL || GEMINI_MODELS.FLASH_3,
+    model: process.env.GEMINI_MODEL || GEMINI_MODELS.FLASH_LITE_3_1,
     maxOutputTokens: parseIntEnv('GEMINI_MAX_OUTPUT_TOKENS', 8192),
     temperature: process.env.GEMINI_TEMPERATURE ? parseFloat(process.env.GEMINI_TEMPERATURE) : 0.0,
     mediaResolution:
@@ -166,7 +166,7 @@ export function loadGeminiConfig(overrides?: Partial<GeminiConfig>): GeminiConfi
  */
 export const GENERATION_PRESETS = {
   // Fast mode: <2s target, temperature 0.0, JSON output
-  // Gemini 3 Flash defaults to HIGH thinking - must set MINIMAL when using JSON mode
+  // Gemini 3.1 Flash-Lite defaults to HIGH thinking - must set MINIMAL when using JSON mode
   fast: {
     temperature: 0.0,
     maxOutputTokens: 8192,
@@ -182,7 +182,7 @@ export const GENERATION_PRESETS = {
   }),
 
   // Multimodal mode: 5-15s target
-  // Gemini 3 Flash defaults to HIGH thinking which is incompatible with
+  // Gemini 3.1 Flash-Lite defaults to HIGH thinking which is incompatible with
   // responseMimeType: 'application/json', causing intermittent empty responses.
   // Explicitly set MINIMAL thinking to prevent this known API issue.
   multimodal: {
@@ -192,6 +192,4 @@ export const GENERATION_PRESETS = {
     thinkingConfig: { thinkingLevel: 'MINIMAL' as ThinkingLevel },
   },
 
-  // Fast mode also needs MINIMAL thinking to avoid empty JSON responses
-  // from Gemini 3 Flash's default HIGH thinking conflicting with JSON output.
 } as const;
