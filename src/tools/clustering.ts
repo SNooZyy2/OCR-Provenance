@@ -355,6 +355,38 @@ async function handleClusterAssign(params: Record<string, unknown>): Promise<Too
       throw new MCPError('INTERNAL_ERROR', 'No valid cluster centroids found');
     }
 
+    // Check if document already has an assignment in this run
+    const existing = conn
+      .prepare('SELECT id, cluster_id FROM document_clusters WHERE document_id = ? AND run_id = ?')
+      .get(input.document_id, input.run_id) as { id: string; cluster_id: string | null } | undefined;
+
+    // Short-circuit: if already assigned to the best cluster, no-op
+    if (existing && existing.cluster_id === bestClusterId) {
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          cluster_id: bestClusterId,
+          cluster_index: bestClusterIndex,
+          similarity_to_centroid: Math.round(bestSimilarity * 1000000) / 1000000,
+          run_id: input.run_id,
+          assigned: false,
+          already_in_cluster: true,
+          next_steps: [
+            { tool: 'ocr_cluster_get', description: 'Inspect the assigned cluster' },
+            { tool: 'ocr_cluster_list', description: 'Browse all clusters' },
+          ],
+        })
+      );
+    }
+
+    if (existing) {
+      // Delete existing assignment and decrement old cluster's count
+      conn.prepare('DELETE FROM document_clusters WHERE id = ?').run(existing.id);
+      if (existing.cluster_id) {
+        conn.prepare('UPDATE clusters SET document_count = MAX(0, document_count - 1) WHERE id = ?').run(existing.cluster_id);
+      }
+    }
+
     // Insert document_cluster assignment
     const now = new Date().toISOString();
     const dc: DocumentCluster = {
@@ -377,7 +409,7 @@ async function handleClusterAssign(params: Record<string, unknown>): Promise<Too
       details: { cluster_id: bestClusterId, run_id: input.run_id, similarity: dc.similarity_to_centroid },
     });
 
-    // Update cluster document_count
+    // Increment target cluster's document_count
     conn
       .prepare('UPDATE clusters SET document_count = document_count + 1 WHERE id = ?')
       .run(bestClusterId);
@@ -406,7 +438,7 @@ async function handleClusterAssign(params: Record<string, unknown>): Promise<Too
       ),
       input_hash: null,
       file_hash: null,
-      processor: 'cluster-reassign',
+      processor: 'cluster-assign',
       processor_version: '1.0.0',
       processing_params: {
         document_id: input.document_id,
@@ -451,15 +483,16 @@ async function handleClusterDelete(params: Record<string, unknown>): Promise<Too
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
-    // Collect provenance IDs before deletion (lightweight: no centroid blobs)
-    const provenanceIds = conn
-      .prepare('SELECT provenance_id FROM clusters WHERE run_id = ?')
-      .all(input.run_id) as Array<{ provenance_id: string }>;
+    // Verify clusters exist before deletion
+    const clusterCount = conn
+      .prepare('SELECT COUNT(*) AS cnt FROM clusters WHERE run_id = ?')
+      .get(input.run_id) as { cnt: number };
 
-    if (provenanceIds.length === 0) {
+    if (clusterCount.cnt === 0) {
       throw new MCPError('DOCUMENT_NOT_FOUND', `No clusters found for run "${input.run_id}"`);
     }
 
+    // deleteClustersByRunId handles provenance cleanup internally
     const deletedCount = deleteClustersByRunId(conn, input.run_id);
 
     logAudit({
@@ -468,18 +501,6 @@ async function handleClusterDelete(params: Record<string, unknown>): Promise<Too
       entityId: input.run_id,
       details: { clusters_deleted: deletedCount },
     });
-
-    // Clean up provenance records for deleted clusters
-    const deleteProvStmt = conn.prepare('DELETE FROM provenance WHERE id = ?');
-    for (const { provenance_id } of provenanceIds) {
-      try {
-        deleteProvStmt.run(provenance_id);
-      } catch (err) {
-        console.error(
-          `[clustering] Failed to delete provenance ${provenance_id}: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    }
 
     return formatResponse(
       successResult({

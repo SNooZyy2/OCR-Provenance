@@ -411,8 +411,8 @@ export function cosineSimilarity(a: Float32Array | number[], b: number[]): numbe
   for (let i = 0; i < a.length; i++) {
     dot += (a[i] ?? 0) * (b[i] ?? 0);
   }
-  // Clamp to [0, 1] to handle floating point drift
-  return Math.max(0, Math.min(1, dot));
+  // Clamp to [-1, 1] to handle floating point drift
+  return Math.max(-1, Math.min(1, dot));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -487,10 +487,25 @@ export async function runClustering(
 
   // Build cluster result items and store cluster records
   const clusterItems: ClusterResultItem[] = [];
-  const labels = workerResult.labels!;
-  const probabilities = workerResult.probabilities!;
-  const centroids = workerResult.centroids!;
-  const coherenceScores = workerResult.coherence_scores!;
+
+  // Validate required fields before destructuring
+  if (!workerResult.labels || !workerResult.probabilities || !workerResult.centroids || !workerResult.coherence_scores) {
+    throw new ClusteringError(
+      'Clustering worker returned success but missing required fields (labels, probabilities, centroids, coherence_scores)',
+      'WORKER_PARSE_ERROR',
+      {
+        hasLabels: !!workerResult.labels,
+        hasProbabilities: !!workerResult.probabilities,
+        hasCentroids: !!workerResult.centroids,
+        hasCoherenceScores: !!workerResult.coherence_scores,
+      }
+    );
+  }
+
+  const labels = workerResult.labels;
+  const probabilities = workerResult.probabilities;
+  const centroids = workerResult.centroids;
+  const coherenceScores = workerResult.coherence_scores;
 
   // Group documents by cluster label
   const clusterGroups = new Map<number, number[]>(); // label -> doc indices

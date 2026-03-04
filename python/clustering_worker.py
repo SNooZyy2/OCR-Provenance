@@ -215,7 +215,7 @@ def cluster_kmeans(
         clusterer = KMeans(n_clusters=n_clusters, n_init="auto", random_state=42)
         labels = clusterer.fit_predict(feature_vectors)
     else:
-        clusterer = KMeans(n_clusters=n_clusters, n_init="auto")
+        clusterer = KMeans(n_clusters=n_clusters, n_init="auto", random_state=42)
         labels = clusterer.fit_predict(embeddings)
 
     # K-Means does not produce probabilities
@@ -306,7 +306,7 @@ def compute_silhouette(embeddings: np.ndarray, labels: np.ndarray) -> float:
 
     # Need at least 2 clusters and 2 samples
     unique_clusters = set(filtered_labels.tolist())
-    if len(unique_clusters) < 2 or len(filtered_embeddings) < 2:
+    if len(unique_clusters) < 2 or len(filtered_embeddings) < 2 or len(unique_clusters) >= len(filtered_embeddings):
         return 0.0
 
     score = silhouette_score(filtered_embeddings, filtered_labels, metric="cosine")
