@@ -811,6 +811,7 @@ function getDefaultAllowedBaseDirs(): string[] {
  * the storage path, home directory, /tmp, and the current working directory.
  *
  * - Rejects null bytes
+ * - Auto-translates Windows-style paths (C:\...) to /host/... on Linux (Docker support)
  * - Resolves the path fully via path.resolve() to eliminate '..' segments
  * - Verifies the resolved path starts with one of the allowed base directories
  *
@@ -825,14 +826,17 @@ export function sanitizePath(filePath: string, allowedBaseDirs?: string[]): stri
     throw new ValidationError('Path contains null bytes');
   }
 
-  // Detect Windows-style paths on Linux (common in Docker when MCP client sends host paths)
+  // Auto-translate Windows-style paths on Linux (common in Docker when MCP client sends host paths).
   // Pattern: drive letter followed by colon and backslash or forward slash (e.g., C:\, D:/)
+  // Instead of rejecting, translate C:\Users\... → /host/Users/... so the path resolves
+  // through normal allowed-directory validation. If /host is not mounted, the validation
+  // below will reject with a clear "outside allowed directories" error.
   if (process.platform !== 'win32' && /^[a-zA-Z]:[/\\]/.test(filePath)) {
-    throw new ValidationError(
-      `Windows-style path detected: "${filePath}". ` +
-        `In Docker, files must be accessed via container mount paths. ` +
-        `If your host directory is mounted at /host, use "/host/${filePath.slice(3).replace(/\\/g, '/')}" instead. ` +
-        `Check your Docker volume mounts with: docker inspect <container_id>`
+    const originalPath = filePath;
+    const unixPath = filePath.slice(2).replace(/\\/g, '/');
+    filePath = '/host' + unixPath;
+    console.error(
+      `[path-sanitize] Auto-translated Windows path "${originalPath}" to container path: "${filePath}"`
     );
   }
 
